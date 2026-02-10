@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dog-nutrition"
+version = "0.1.0"
+description = "Minimal dog nutrition energy calculator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.0",
+  "typer>=0.9",
+  "pytest>=7.0",
+]
+
+[project.scripts]
+dog-nutrition = "dog_nutrition.cli:app"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = "-q"
+
