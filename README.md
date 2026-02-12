@@ -10,6 +10,15 @@
 
 ---
 
+## 运行 UI（Streamlit）
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+streamlit run app.py
+```
+
 ## 1. MVP 范围（第一版）
 
 第一版先聚焦「可计算、可评估」：
