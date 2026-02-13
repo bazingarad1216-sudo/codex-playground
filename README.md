@@ -280,3 +280,44 @@ Response:
   - The Forever Dog 作为“食材选择与实践偏好”
 - 单位必须统一（mg/µg/IU、每1000kcal、每日绝对量）
 - 食材缺失微量营养数据时，结果需标记“数据不完整”，避免误判
+
+---
+
+## Offline FoodData Central (FDC) 导入与本地热量查询
+
+> 约束：代码不做任何网络请求。你需要先手动下载 USDA FDC 数据文件（JSON 或 CSV）到本地。
+
+### 1) 手动下载 FDC 数据
+
+可从 USDA FoodData Central 的 Download 页面手动下载数据包，然后解压得到本地文件。
+
+导入脚本支持：
+
+- JSON：顶层 `foods` 列表或直接列表；每项包含 `description/name`，并包含能量字段（`kcal_per_100g` / `energy_kcal`）或 `foodNutrients` 中的 Energy。
+- CSV：包含 `description/name`，以及 `kcal_per_100g` / `energy_kcal` / `energy` / `Energy` 列之一。
+
+### 2) 导入到本地 SQLite
+
+```bash
+python -m dog_nutrition.fdc_import --db foods.db --input /path/to/fdc_file.json
+# 或
+python -m dog_nutrition.fdc_import --db foods.db --input /path/to/fdc_file.csv
+```
+
+导入结果会打印：
+
+- `imported`: 成功写入/更新条数
+- `skipped_missing_energy`: 因缺失能量信息被跳过条数（显式处理）
+
+### 3) 在 Streamlit 中使用 Food search
+
+```bash
+FOODS_DB_PATH=foods.db streamlit run app.py
+```
+
+页面新增 **Food search (offline)** 区域：
+
+1. 输入食物关键字（LIKE 搜索）
+2. 选择匹配条目
+3. 输入克重（grams）
+4. 自动计算并显示 kcal
