@@ -7,7 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .foods_db import connect_db, init_db, upsert_food
+from .foods_db import connect_db, init_db, upsert_food, upsert_food_nutrient, upsert_nutrient_meta
+from .nutrients import FDC_NUTRIENT_TO_KEY, KEY_NUTRIENTS
 
 
 ENERGY_NUTRIENT_NUMBERS = {"1008"}
@@ -28,18 +29,26 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-def _extract_energy_from_nutrients(nutrients: list[dict[str, Any]]) -> float | None:
+def _extract_nutrients_from_json_item(item: dict[str, Any]) -> dict[str, float]:
+    mapped: dict[str, float] = {}
+    nutrients = item.get("foodNutrients")
+    if not isinstance(nutrients, list):
+        return mapped
     for nutrient in nutrients:
+        if not isinstance(nutrient, dict):
+            continue
         number = str(nutrient.get("nutrientNumber", "")).strip()
-        name = str(nutrient.get("nutrientName", "")).strip()
-        if number in ENERGY_NUTRIENT_NUMBERS or name in ENERGY_NUTRIENT_NAMES:
-            amount = _to_float(nutrient.get("value") or nutrient.get("amount"))
-            if amount is not None:
-                return amount
-    return None
+        amount = _to_float(nutrient.get("value") or nutrient.get("amount"))
+        if amount is None:
+            continue
+        if number in FDC_NUTRIENT_TO_KEY:
+            mapped[FDC_NUTRIENT_TO_KEY[number]] = amount
+        if number in ENERGY_NUTRIENT_NUMBERS:
+            mapped["kcal"] = amount
+    return mapped
 
 
-def _extract_record_from_json_item(item: dict[str, Any]) -> tuple[str, float, int | None] | None:
+def _extract_record_from_json_item(item: dict[str, Any]) -> tuple[str, float, int | None, dict[str, float]] | None:
     name = str(item.get("description") or item.get("name") or "").strip()
     if not name:
         return None
@@ -47,26 +56,28 @@ def _extract_record_from_json_item(item: dict[str, Any]) -> tuple[str, float, in
     fdc_id_value = item.get("fdcId") or item.get("fdc_id")
     fdc_id = int(fdc_id_value) if isinstance(fdc_id_value, int) or str(fdc_id_value).isdigit() else None
 
+    nutrient_map = _extract_nutrients_from_json_item(item)
     kcal = _to_float(item.get("kcal_per_100g") or item.get("energy_kcal") or item.get("energy"))
     if kcal is None:
-        nutrients = item.get("foodNutrients")
-        if isinstance(nutrients, list):
-            kcal = _extract_energy_from_nutrients(nutrients)
+        kcal = nutrient_map.get("kcal")
     if kcal is None:
         return None
+    nutrient_map["kcal"] = kcal
+    return name, kcal, fdc_id, nutrient_map
 
-    return name, kcal, fdc_id
+
+def _seed_nutrient_meta(conn: sqlite3.Connection) -> None:
+    upsert_nutrient_meta(conn, nutrient_key="kcal", nutrient_name="Energy", unit="kcal", fdc_nutrient_number="1008")
+    for key, (name, unit) in KEY_NUTRIENTS.items():
+        code = next((k for k, v in FDC_NUTRIENT_TO_KEY.items() if v == key), None)
+        upsert_nutrient_meta(conn, nutrient_key=key, nutrient_name=name, unit=unit, fdc_nutrient_number=code)
 
 
 def import_from_json(conn: sqlite3.Connection, json_path: Path, source: str) -> tuple[int, int]:
+    _seed_nutrient_meta(conn)
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        foods = data.get("foods")
-        if not isinstance(foods, list):
-            raise ValueError("JSON file must contain a top-level list or a 'foods' list field")
-    elif isinstance(data, list):
-        foods = data
-    else:
+    foods = data.get("foods") if isinstance(data, dict) else data
+    if not isinstance(foods, list):
         raise ValueError("Unsupported JSON structure")
 
     imported = 0
@@ -78,15 +89,17 @@ def import_from_json(conn: sqlite3.Connection, json_path: Path, source: str) -> 
         if parsed is None:
             skipped_missing_energy += 1
             continue
-        name, kcal, fdc_id = parsed
-        upsert_food(conn, name=name, kcal_per_100g=kcal, source=source, fdc_id=fdc_id)
+        name, kcal, fdc_id, nutrient_map = parsed
+        food_id = upsert_food(conn, name=name, kcal_per_100g=kcal, source=source, fdc_id=fdc_id)
+        for key, amount in nutrient_map.items():
+            upsert_food_nutrient(conn, food_id=food_id, nutrient_key=key, amount_per_100g=amount)
         imported += 1
 
     conn.commit()
     return imported, skipped_missing_energy
 
 
-def _extract_record_from_csv_row(row: dict[str, str]) -> tuple[str, float, int | None] | None:
+def _extract_record_from_csv_row(row: dict[str, str]) -> tuple[str, float, int | None, dict[str, float]] | None:
     name = (row.get("description") or row.get("name") or "").strip()
     if not name:
         return None
@@ -94,19 +107,21 @@ def _extract_record_from_csv_row(row: dict[str, str]) -> tuple[str, float, int |
     fdc_id_raw = (row.get("fdc_id") or row.get("fdcId") or "").strip()
     fdc_id = int(fdc_id_raw) if fdc_id_raw.isdigit() else None
 
-    kcal = _to_float(
-        row.get("kcal_per_100g")
-        or row.get("energy_kcal")
-        or row.get("energy")
-        or row.get("Energy")
-    )
+    kcal = _to_float(row.get("kcal_per_100g") or row.get("energy_kcal") or row.get("energy") or row.get("Energy"))
     if kcal is None:
         return None
 
-    return name, kcal, fdc_id
+    nutrient_map = {"kcal": kcal}
+    for key in KEY_NUTRIENTS:
+        value = _to_float(row.get(key))
+        if value is not None:
+            nutrient_map[key] = value
+
+    return name, kcal, fdc_id, nutrient_map
 
 
 def import_from_csv(conn: sqlite3.Connection, csv_path: Path, source: str) -> tuple[int, int]:
+    _seed_nutrient_meta(conn)
     imported = 0
     skipped_missing_energy = 0
     with csv_path.open("r", encoding="utf-8", newline="") as fh:
@@ -116,8 +131,10 @@ def import_from_csv(conn: sqlite3.Connection, csv_path: Path, source: str) -> tu
             if parsed is None:
                 skipped_missing_energy += 1
                 continue
-            name, kcal, fdc_id = parsed
-            upsert_food(conn, name=name, kcal_per_100g=kcal, source=source, fdc_id=fdc_id)
+            name, kcal, fdc_id, nutrient_map = parsed
+            food_id = upsert_food(conn, name=name, kcal_per_100g=kcal, source=source, fdc_id=fdc_id)
+            for key, amount in nutrient_map.items():
+                upsert_food_nutrient(conn, food_id=food_id, nutrient_key=key, amount_per_100g=amount)
             imported += 1
     conn.commit()
     return imported, skipped_missing_energy
@@ -154,9 +171,7 @@ def main() -> None:
         input_path=input_path,
         source=args.source,
     )
-    print(
-        f"Import done. imported={imported} skipped_missing_energy={skipped_missing_energy} db={db_path}"
-    )
+    print(f"Import done. imported={imported} skipped_missing_energy={skipped_missing_energy} db={db_path}")
 
 
 if __name__ == "__main__":

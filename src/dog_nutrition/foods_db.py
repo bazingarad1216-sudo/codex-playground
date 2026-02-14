@@ -4,6 +4,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .toxicity import is_toxic_food_name
+
 
 @dataclass(frozen=True)
 class FoodRecord:
@@ -12,6 +14,13 @@ class FoodRecord:
     kcal_per_100g: float
     source: str
     fdc_id: int | None
+
+
+@dataclass(frozen=True)
+class NutrientValue:
+    nutrient_key: str
+    amount_per_100g: float
+    unit: str
 
 
 def connect_db(db_path: str | Path) -> sqlite3.Connection:
@@ -33,8 +42,31 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name)")
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name)"
+        """
+        CREATE TABLE IF NOT EXISTS nutrient_meta (
+            nutrient_key TEXT PRIMARY KEY,
+            nutrient_name TEXT NOT NULL,
+            unit TEXT NOT NULL,
+            fdc_nutrient_number TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS food_nutrients (
+            food_id INTEGER NOT NULL,
+            nutrient_key TEXT NOT NULL,
+            amount_per_100g REAL NOT NULL,
+            PRIMARY KEY(food_id, nutrient_key),
+            FOREIGN KEY(food_id) REFERENCES foods(id) ON DELETE CASCADE,
+            FOREIGN KEY(nutrient_key) REFERENCES nutrient_meta(nutrient_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_food_nutrients_key ON food_nutrients(nutrient_key)"
     )
     conn.commit()
 
@@ -46,7 +78,7 @@ def upsert_food(
     kcal_per_100g: float,
     source: str,
     fdc_id: int | None,
-) -> None:
+) -> int:
     normalized_name = name.strip()
     if not normalized_name:
         raise ValueError("Food name cannot be empty")
@@ -54,22 +86,91 @@ def upsert_food(
         raise ValueError("kcal_per_100g must be >= 0")
 
     if fdc_id is None:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO foods(name, kcal_per_100g, source, fdc_id) VALUES (?, ?, ?, NULL)",
             (normalized_name, kcal_per_100g, source),
         )
-    else:
-        conn.execute(
-            """
-            INSERT INTO foods(name, kcal_per_100g, source, fdc_id)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(source, fdc_id)
-            DO UPDATE SET
-                name = excluded.name,
-                kcal_per_100g = excluded.kcal_per_100g
-            """,
-            (normalized_name, kcal_per_100g, source, fdc_id),
+        return int(cur.lastrowid)
+
+    conn.execute(
+        """
+        INSERT INTO foods(name, kcal_per_100g, source, fdc_id)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(source, fdc_id)
+        DO UPDATE SET
+            name = excluded.name,
+            kcal_per_100g = excluded.kcal_per_100g
+        """,
+        (normalized_name, kcal_per_100g, source, fdc_id),
+    )
+    row = conn.execute(
+        "SELECT id FROM foods WHERE source = ? AND fdc_id = ?",
+        (source, fdc_id),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("Failed to upsert food")
+    return int(row["id"])
+
+
+def upsert_nutrient_meta(
+    conn: sqlite3.Connection,
+    *,
+    nutrient_key: str,
+    nutrient_name: str,
+    unit: str,
+    fdc_nutrient_number: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO nutrient_meta(nutrient_key, nutrient_name, unit, fdc_nutrient_number)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(nutrient_key)
+        DO UPDATE SET
+            nutrient_name = excluded.nutrient_name,
+            unit = excluded.unit,
+            fdc_nutrient_number = excluded.fdc_nutrient_number
+        """,
+        (nutrient_key, nutrient_name, unit, fdc_nutrient_number),
+    )
+
+
+def upsert_food_nutrient(
+    conn: sqlite3.Connection,
+    *,
+    food_id: int,
+    nutrient_key: str,
+    amount_per_100g: float,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO food_nutrients(food_id, nutrient_key, amount_per_100g)
+        VALUES (?, ?, ?)
+        ON CONFLICT(food_id, nutrient_key)
+        DO UPDATE SET amount_per_100g = excluded.amount_per_100g
+        """,
+        (food_id, nutrient_key, amount_per_100g),
+    )
+
+
+def get_food_nutrients(conn: sqlite3.Connection, food_id: int) -> list[NutrientValue]:
+    rows = conn.execute(
+        """
+        SELECT fn.nutrient_key, fn.amount_per_100g, nm.unit
+        FROM food_nutrients fn
+        JOIN nutrient_meta nm ON nm.nutrient_key = fn.nutrient_key
+        WHERE fn.food_id = ?
+        ORDER BY fn.nutrient_key
+        """,
+        (food_id,),
+    ).fetchall()
+    return [
+        NutrientValue(
+            nutrient_key=row["nutrient_key"],
+            amount_per_100g=row["amount_per_100g"],
+            unit=row["unit"],
         )
+        for row in rows
+    ]
 
 
 def search_foods(
@@ -77,6 +178,7 @@ def search_foods(
     query: str,
     *,
     limit: int = 20,
+    include_toxic: bool = False,
 ) -> list[FoodRecord]:
     if limit <= 0:
         raise ValueError("limit must be > 0")
@@ -89,9 +191,10 @@ def search_foods(
         ORDER BY name ASC
         LIMIT ?
         """,
-        (f"%{query.strip()}%", limit),
+        (f"%{query.strip()}%", limit * 3),
     ).fetchall()
-    return [
+
+    records = [
         FoodRecord(
             id=row["id"],
             name=row["name"],
@@ -101,6 +204,10 @@ def search_foods(
         )
         for row in rows
     ]
+    if include_toxic:
+        return records[:limit]
+    safe = [item for item in records if not is_toxic_food_name(item.name)]
+    return safe[:limit]
 
 
 def calculate_kcal_for_grams(*, kcal_per_100g: float, grams: float) -> float:
