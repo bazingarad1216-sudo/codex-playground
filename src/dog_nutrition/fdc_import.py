@@ -10,7 +10,8 @@ from typing import Any
 from .foods_db import connect_db, init_db, upsert_food, upsert_food_nutrient, upsert_nutrient_meta
 from .nutrients import FDC_NUTRIENT_TO_KEY, KEY_NUTRIENTS
 
-ENERGY_NUTRIENT_NUMBERS = {"1008"}
+ENERGY_KCAL_NUMBER = "1008"
+ENERGY_KJ_NUMBER = "1062"
 
 
 def _to_float(value: Any) -> float | None:
@@ -21,6 +22,17 @@ def _to_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
 
+
+
+
+def _extract_fdc_nutrient_number(nutrient: dict[str, Any]) -> str:
+    nd = nutrient.get("nutrient")
+    num = nutrient.get("nutrientId") or nutrient.get("nutrient_id")
+    if not num and isinstance(nd, dict):
+        num = nd.get("id") or nd.get("number") or nd.get("nutrientNumber")
+    if not num:
+        num = nutrient.get("nutrientNumber") or nutrient.get("number")
+    return str(num).strip() if num is not None else ""
 
 def _seed_nutrient_meta(conn: sqlite3.Connection) -> None:
     upsert_nutrient_meta(conn, nutrient_key="kcal", nutrient_name="Energy", unit="kcal", fdc_nutrient_number="1008")
@@ -37,12 +49,16 @@ def _extract_nutrients_from_json_item(item: dict[str, Any]) -> dict[str, float]:
     for nutrient in nutrients:
         if not isinstance(nutrient, dict):
             continue
-        number = str(nutrient.get("nutrientNumber", "")).strip()
+        number = _extract_fdc_nutrient_number(nutrient)
         amount = _to_float(nutrient.get("value") or nutrient.get("amount"))
         if amount is None:
             continue
-        if number in ENERGY_NUTRIENT_NUMBERS:
+
+        if number == ENERGY_KCAL_NUMBER:
             out["kcal"] = amount
+        elif number == ENERGY_KJ_NUMBER:
+            out["kcal"] = amount / 4.184
+
         mapped = FDC_NUTRIENT_TO_KEY.get(number)
         if mapped is not None:
             out[mapped] = amount
