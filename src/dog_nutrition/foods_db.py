@@ -4,6 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .nutrients import KEY_NUTRIENTS
 from .toxicity import is_toxic_food_name
 
 
@@ -21,6 +22,7 @@ class NutrientValue:
     nutrient_key: str
     amount_per_100g: float
     unit: str
+    group: str
 
 
 def connect_db(db_path: str | Path) -> sqlite3.Connection:
@@ -168,6 +170,7 @@ def get_food_nutrients(conn: sqlite3.Connection, food_id: int) -> list[NutrientV
             nutrient_key=row["nutrient_key"],
             amount_per_100g=row["amount_per_100g"],
             unit=row["unit"],
+            group=KEY_NUTRIENTS.get(row["nutrient_key"], ("", "", "其他"))[2],
         )
         for row in rows
     ]
