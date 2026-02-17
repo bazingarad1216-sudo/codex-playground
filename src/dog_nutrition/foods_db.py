@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ class FoodRecord:
 @dataclass(frozen=True)
 class NutrientValue:
     nutrient_key: str
+    display_name: str
     amount_per_100g: float
     unit: str
     group: str
@@ -67,9 +69,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_food_nutrients_key ON food_nutrients(nutrient_key)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_food_nutrients_key ON food_nutrients(nutrient_key)")
     conn.commit()
 
 
@@ -157,7 +157,7 @@ def upsert_food_nutrient(
 def get_food_nutrients(conn: sqlite3.Connection, food_id: int) -> list[NutrientValue]:
     rows = conn.execute(
         """
-        SELECT fn.nutrient_key, fn.amount_per_100g, nm.unit
+        SELECT fn.nutrient_key, nm.nutrient_name, fn.amount_per_100g, nm.unit
         FROM food_nutrients fn
         JOIN nutrient_meta nm ON nm.nutrient_key = fn.nutrient_key
         WHERE fn.food_id = ?
@@ -168,12 +168,23 @@ def get_food_nutrients(conn: sqlite3.Connection, food_id: int) -> list[NutrientV
     return [
         NutrientValue(
             nutrient_key=row["nutrient_key"],
+            display_name=row["nutrient_name"],
             amount_per_100g=row["amount_per_100g"],
             unit=row["unit"],
             group=KEY_NUTRIENTS.get(row["nutrient_key"], ("", "", "其他"))[2],
         )
         for row in rows
     ]
+
+
+def _query_to_like_pattern(query: str) -> str:
+    q = query.strip().lower()
+    if not q:
+        return "%"
+    tokens = re.findall(r"[a-z0-9]+", q)
+    if len(tokens) >= 2:
+        return "%" + "%".join(tokens) + "%"
+    return f"%{q}%"
 
 
 def search_foods(
@@ -190,11 +201,11 @@ def search_foods(
         """
         SELECT id, name, kcal_per_100g, source, fdc_id
         FROM foods
-        WHERE name LIKE ?
+        WHERE lower(name) LIKE ?
         ORDER BY name ASC
         LIMIT ?
         """,
-        (f"%{query.strip()}%", limit * 3),
+        (_query_to_like_pattern(query), limit * 3),
     ).fetchall()
 
     records = [

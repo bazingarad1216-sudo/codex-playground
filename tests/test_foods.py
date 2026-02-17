@@ -37,6 +37,7 @@ def test_nutrients_storage(tmp_path: Path) -> None:
     items = get_food_nutrients(conn, food_id)
     assert len(items) == 1
     assert items[0].nutrient_key == "protein_g"
+    assert items[0].display_name == "Protein"
     assert items[0].amount_per_100g == 31.0
 
 
