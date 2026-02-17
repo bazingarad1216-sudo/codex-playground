@@ -177,14 +177,12 @@ def get_food_nutrients(conn: sqlite3.Connection, food_id: int) -> list[NutrientV
     ]
 
 
-def _query_to_like_pattern(query: str) -> str:
+def _query_to_tokens(query: str) -> tuple[str, list[str]]:
     q = query.strip().lower()
     if not q:
-        return "%"
+        return q, []
     tokens = re.findall(r"[a-z0-9]+", q)
-    if len(tokens) >= 2:
-        return "%" + "%".join(tokens) + "%"
-    return f"%{q}%"
+    return q, tokens
 
 
 def search_foods(
@@ -197,15 +195,26 @@ def search_foods(
     if limit <= 0:
         raise ValueError("limit must be > 0")
 
+    q, tokens = _query_to_tokens(query)
+    if not q:
+        where_clause = "1=1"
+        params: list[object] = []
+    elif tokens:
+        where_clause = " AND ".join(["lower(name) LIKE ?" for _ in tokens])
+        params = [f"%{token}%" for token in tokens]
+    else:
+        where_clause = "lower(name) LIKE ?"
+        params = [f"%{q}%"]
+
     rows = conn.execute(
-        """
+        f"""
         SELECT id, name, kcal_per_100g, source, fdc_id
         FROM foods
-        WHERE lower(name) LIKE ?
+        WHERE {where_clause}
         ORDER BY name ASC
         LIMIT ?
         """,
-        (_query_to_like_pattern(query), limit * 3),
+        [*params, limit * 3],
     ).fetchall()
 
     records = [
