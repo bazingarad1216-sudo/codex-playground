@@ -7,17 +7,30 @@ from dog_nutrition.foods_db import connect_db, init_db, search_foods
 from dog_nutrition.search import search_foods_cn
 
 
+def _top2_names_en(rows) -> list[str]:
+    return [row.name for row in rows[:2]]
+
+
+def _top2_names_cn(rows) -> list[str]:
+    return [row.food.name for row in rows[:2]]
+
+
 def main() -> None:
     db_path = Path(os.environ.get("FOODS_DB_PATH", "foods.db")).resolve()
+    en_queries = ["chicken", "breast", "chicken breast"]
+    cn_queries = ["鸡蛋", "鸡胸肉", "鸡肉", "鸡"]
+
     with connect_db(db_path) as conn:
         init_db(conn)
-        hits_token_and = search_foods(conn, "chicken breast", limit=20)
-        hits_search_foods = search_foods(conn, "chicken breast", limit=20)
-        hits_search_cn = search_foods_cn(conn, "鸡胸肉", limit=20)
+        print(f"db={db_path}")
 
-    print(f"token_and_hits={len(hits_token_and)}")
-    print(f"search_foods('chicken breast')_hits={len(hits_search_foods)}")
-    print(f"search_foods_cn('鸡胸肉')_hits={len(hits_search_cn)}")
+        for query in en_queries:
+            hits = search_foods(conn, query, limit=20)
+            print(f"EN query={query!r} hits={len(hits)} top2={_top2_names_en(hits)}")
+
+        for query in cn_queries:
+            hits = search_foods_cn(conn, query, limit=20)
+            print(f"CN query={query!r} hits={len(hits)} top2={_top2_names_cn(hits)}")
 
 
 if __name__ == "__main__":
