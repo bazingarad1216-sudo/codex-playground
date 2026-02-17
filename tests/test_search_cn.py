@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from dog_nutrition.foods_db import connect_db, init_db, search_foods, upsert_food
+from dog_nutrition.toxicity import is_toxic_food_name
 from dog_nutrition.search import expand_query, search_foods_cn
 
 
@@ -35,3 +36,29 @@ def test_expand_query_contains_chicken_tokens() -> None:
     assert "chicken breast" in lowered
     assert "chicken" in lowered
     assert "breast" in lowered
+
+
+def test_search_foods_cn_filters_toxic_keywords(tmp_path: Path) -> None:
+    db_path = tmp_path / "foods.db"
+    with connect_db(db_path) as conn:
+        init_db(conn)
+        upsert_food(conn, name="Onion, raw", kcal_per_100g=40.0, source="fdc", fdc_id=101)
+        upsert_food(conn, name="Chocolate, dark, 70%", kcal_per_100g=598.0, source="fdc", fdc_id=102)
+        upsert_food(conn, name="Grape, raw", kcal_per_100g=69.0, source="fdc", fdc_id=103)
+        upsert_food(conn, name="Xylitol chewing gum", kcal_per_100g=0.0, source="fdc", fdc_id=104)
+        conn.commit()
+
+        onion_hits = search_foods_cn(conn, "onion", limit=10)
+        chocolate_hits = search_foods_cn(conn, "chocolate", limit=10)
+        grape_hits = search_foods_cn(conn, "grape", limit=10)
+        xylitol_hits = search_foods_cn(conn, "xylitol", limit=10)
+
+    assert is_toxic_food_name("onion")
+    assert is_toxic_food_name("chocolate")
+    assert is_toxic_food_name("grape")
+    assert is_toxic_food_name("xylitol")
+
+    assert onion_hits == []
+    assert chocolate_hits == []
+    assert grape_hits == []
+    assert xylitol_hits == []

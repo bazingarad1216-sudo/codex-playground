@@ -7,12 +7,12 @@ from dog_nutrition.foods_db import connect_db, init_db, search_foods
 from dog_nutrition.search import search_foods_cn
 
 
-def _top2_names_en(rows) -> list[str]:
-    return [row.name for row in rows[:2]]
+def _top3_names_en(rows) -> list[str]:
+    return [row.name for row in rows[:3]]
 
 
-def _top2_names_cn(rows) -> list[str]:
-    return [row.food.name for row in rows[:2]]
+def _top3_names_cn(rows) -> list[str]:
+    return [row.food.name for row in rows[:3]]
 
 
 def main() -> None:
@@ -26,11 +26,11 @@ def main() -> None:
 
         for query in en_queries:
             hits = search_foods(conn, query, limit=20)
-            print(f"EN query={query!r} hits={len(hits)} top2={_top2_names_en(hits)}")
+            print(f"EN query={query!r} hits={len(hits)} top3={_top3_names_en(hits)}")
 
         for query in cn_queries:
             hits = search_foods_cn(conn, query, limit=20)
-            print(f"CN query={query!r} hits={len(hits)} top2={_top2_names_cn(hits)}")
+            print(f"CN query={query!r} hits={len(hits)} top3={_top3_names_cn(hits)}")
 
 
 if __name__ == "__main__":

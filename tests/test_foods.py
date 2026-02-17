@@ -48,3 +48,33 @@ def test_toxic_keywords() -> None:
     assert is_toxic_food_name("洋葱")
     assert is_toxic_food_name("dark chocolate")
     assert not is_toxic_food_name("鸡胸肉")
+
+
+def test_search_foods_multi_token_non_contiguous(tmp_path: Path) -> None:
+    db_path = tmp_path / "foods.db"
+    conn = connect_db(db_path)
+    init_db(conn)
+    upsert_food(
+        conn,
+        name="Chicken, broiler or fryers, breast, skinless, boneless, meat only, raw",
+        kcal_per_100g=120.0,
+        source="fdc",
+        fdc_id=10,
+    )
+    upsert_food(
+        conn,
+        name="Egg, white, raw, fresh",
+        kcal_per_100g=52.0,
+        source="fdc",
+        fdc_id=11,
+    )
+    conn.commit()
+
+    chicken_hits = search_foods(conn, "chicken breast", limit=20)
+    egg_hits = search_foods(conn, "egg white", limit=20)
+
+    assert len(chicken_hits) >= 1
+    assert any("chicken" in item.name.lower() and "breast" in item.name.lower() for item in chicken_hits)
+    assert len(egg_hits) >= 1
+    assert any("egg" in item.name.lower() and "white" in item.name.lower() for item in egg_hits)
+    conn.close()
