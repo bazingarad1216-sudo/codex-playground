@@ -21,7 +21,10 @@ def test_upsert_and_search_foods(tmp_path: Path) -> None:
     conn.commit()
 
     results = search_foods(conn, "", limit=20)
-    assert [item.name for item in results] == ["Chicken Breast"]
+    assert results == []
+
+    results_by_token = search_foods(conn, "chicken", limit=20)
+    assert [item.name for item in results_by_token] == ["Chicken Breast"]
     conn.close()
 
 

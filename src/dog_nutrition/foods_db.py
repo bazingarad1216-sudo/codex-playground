@@ -203,9 +203,8 @@ def search_foods(
 
     q, tokens = _query_to_tokens(query)
     if not q:
-        where_clause = "1=1"
-        params: list[object] = []
-    elif tokens:
+        return []
+    if tokens:
         where_clause = " AND ".join(["lower(name) LIKE ?" for _ in tokens])
         params = [f"%{token}%" for token in tokens]
     else:
