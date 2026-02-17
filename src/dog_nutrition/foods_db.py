@@ -238,6 +238,15 @@ def search_foods(
     return safe[:limit]
 
 
+def describe_search_query(query: str) -> tuple[list[str], str]:
+    """Return normalized tokens and SQL-like summary used by search_foods."""
+    _, tokens = _query_to_tokens(query)
+    if not tokens:
+        return [], "EMPTY"
+    conditions = " AND ".join(["lower(name) LIKE %token%" for _ in tokens])
+    return tokens, conditions
+
+
 def calculate_kcal_for_grams(*, kcal_per_100g: float, grams: float) -> float:
     if kcal_per_100g < 0:
         raise ValueError("kcal_per_100g must be >= 0")

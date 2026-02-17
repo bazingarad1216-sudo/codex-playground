@@ -62,3 +62,32 @@ def test_search_foods_cn_filters_toxic_keywords(tmp_path: Path) -> None:
     assert chocolate_hits == []
     assert grape_hits == []
     assert xylitol_hits == []
+
+
+def test_search_foods_cn_chicken_meat_match(tmp_path: Path) -> None:
+    db_path = tmp_path / "foods.db"
+    with connect_db(db_path) as conn:
+        init_db(conn)
+        upsert_food(conn, name="Chicken, stewing, meat only, cooked", kcal_per_100g=180.0, source="fdc", fdc_id=201)
+        conn.commit()
+        hits_cn = search_foods_cn(conn, "鸡肉", limit=10)
+
+    assert len(hits_cn) >= 1
+    assert any("chicken" in h.food.name.lower() for h in hits_cn)
+
+
+def test_search_foods_cn_egg_match(tmp_path: Path) -> None:
+    db_path = tmp_path / "foods.db"
+    with connect_db(db_path) as conn:
+        init_db(conn)
+        upsert_food(conn, name="Egg, white, raw, fresh", kcal_per_100g=52.0, source="fdc", fdc_id=202)
+        conn.commit()
+        hits_cn = search_foods_cn(conn, "鸡蛋", limit=10)
+
+    assert len(hits_cn) >= 1
+    assert any("egg" in h.food.name.lower() for h in hits_cn)
+
+
+def test_expand_query_chicken_keyword_present_for_ji() -> None:
+    expanded = [e.lower() for e in expand_query("鸡")]
+    assert "chicken" in expanded
