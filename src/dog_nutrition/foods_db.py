@@ -177,12 +177,18 @@ def get_food_nutrients(conn: sqlite3.Connection, food_id: int) -> list[NutrientV
     ]
 
 
+def _normalize_query(query: str) -> str:
+    q = query.lower().strip()
+    q = re.sub(r"[,.\-_/()\[\]{}]+", " ", q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
 def _query_to_tokens(query: str) -> tuple[str, list[str]]:
-    q = query.strip().lower()
-    if not q:
-        return q, []
-    tokens = re.findall(r"[a-z0-9]+", q)
-    return q, tokens
+    normalized = _normalize_query(query)
+    if not normalized:
+        return normalized, []
+    return normalized, [token for token in normalized.split(" ") if token]
 
 
 def search_foods(
@@ -211,7 +217,7 @@ def search_foods(
         SELECT id, name, kcal_per_100g, source, fdc_id
         FROM foods
         WHERE {where_clause}
-        ORDER BY name ASC
+        ORDER BY name ASC, id ASC
         LIMIT ?
         """,
         [*params, limit * 3],

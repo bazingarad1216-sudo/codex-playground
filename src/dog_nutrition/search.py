@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .foods_db import FoodRecord, search_foods
@@ -20,6 +21,10 @@ def _char_overlap_score(a: str, b: str) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
+def _term_tokens(term: str) -> list[str]:
+    return [token for token in re.split(r"[^a-z0-9]+", term.lower().strip()) if token]
+
+
 def expand_query(query: str) -> list[str]:
     q = query.strip().lower()
     candidates = [query]
@@ -27,7 +32,12 @@ def expand_query(query: str) -> list[str]:
         if q in cn.lower() or any(q in alias.lower() for alias in aliases):
             candidates.extend(aliases)
             candidates.append(cn)
-    return list(dict.fromkeys(candidates))
+
+    expanded = list(dict.fromkeys(candidates))
+    token_terms: list[str] = []
+    for term in expanded:
+        token_terms.extend(_term_tokens(term))
+    return list(dict.fromkeys([*expanded, *token_terms]))
 
 
 def search_foods_cn(conn, query: str, limit: int = 20) -> list[SearchResult]:
