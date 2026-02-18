@@ -17,7 +17,7 @@ def _top3_names_cn(rows) -> list[str]:
 
 def main() -> None:
     db_path = Path(os.environ.get("FOODS_DB_PATH", "foods.db")).resolve()
-    en_queries = ["chicken", "breast", "chicken breast"]
+    en_queries = ["chicken", "breast", "chicken breast", "chicken, breast"]
     cn_queries = ["鸡蛋", "鸡胸肉", "鸡肉", "鸡"]
 
     with connect_db(db_path) as conn:

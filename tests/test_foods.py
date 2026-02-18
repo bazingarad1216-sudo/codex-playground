@@ -71,10 +71,13 @@ def test_search_foods_multi_token_non_contiguous(tmp_path: Path) -> None:
     conn.commit()
 
     chicken_hits = search_foods(conn, "chicken breast", limit=20)
+    chicken_comma_hits = search_foods(conn, "chicken, breast", limit=20)
     egg_hits = search_foods(conn, "egg white", limit=20)
 
     assert len(chicken_hits) >= 1
     assert any("chicken" in item.name.lower() and "breast" in item.name.lower() for item in chicken_hits)
+    assert len(chicken_comma_hits) >= 1
+    assert any("chicken" in item.name.lower() and "breast" in item.name.lower() for item in chicken_comma_hits)
     assert len(egg_hits) >= 1
     assert any("egg" in item.name.lower() and "white" in item.name.lower() for item in egg_hits)
     conn.close()
