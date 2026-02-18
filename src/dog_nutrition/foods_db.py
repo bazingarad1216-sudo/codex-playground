@@ -190,7 +190,7 @@ def _query_to_tokens(query: str) -> tuple[str, list[str]]:
     normalized = _normalize_query(query)
     if not normalized:
         return normalized, []
-    tokens = [token for token in normalized.split(" ") if token and token not in _STOP_WORDS]
+    tokens = [token for token in re.findall(r"[a-z0-9]+", normalized) if token not in _STOP_WORDS]
     return normalized, tokens
 
 
