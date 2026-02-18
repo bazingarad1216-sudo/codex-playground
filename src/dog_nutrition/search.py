@@ -37,14 +37,40 @@ def expand_query(query: str) -> list[str]:
     token_terms: list[str] = []
     for term in expanded:
         token_terms.extend(_term_tokens(term))
-    return list(dict.fromkeys([*expanded, *token_terms]))
+
+    merged = list(dict.fromkeys([*expanded, *token_terms]))
+    if "鸡" in q:
+        if "chicken" in merged:
+            merged.remove("chicken")
+        insert_idx = 1 if len(merged) >= 1 else 0
+        if "egg" in merged:
+            insert_idx = min(insert_idx, merged.index("egg"))
+        merged.insert(insert_idx, "chicken")
+    return merged
+
+
+
+
+def _term_weight(term: str, query: str) -> float:
+    normalized = term.lower().strip()
+    if normalized == query.lower().strip():
+        return 100.0
+    if any("一" <= ch <= "鿿" for ch in term):
+        return 80.0
+    if normalized in {"chicken", "breast", "drumstick", "poultry", "chicken breast"}:
+        return 70.0
+    if normalized in {"egg", "whole egg", "white egg", "whole", "white"}:
+        return 40.0
+    return 50.0
 
 
 def search_foods_cn(conn, query: str, limit: int = 20) -> list[SearchResult]:
     candidates: dict[int, SearchResult] = {}
     for term in expand_query(query):
+        term_base = _char_overlap_score(query, term)
+        weight = _term_weight(term, query)
         for food in search_foods(conn, term, limit=limit):
-            score = max(_char_overlap_score(query, food.name), _char_overlap_score(term, food.name))
+            score = weight + max(_char_overlap_score(query, food.name), _char_overlap_score(term, food.name), term_base)
             prev = candidates.get(food.id)
             if prev is None or score > prev.score:
                 candidates[food.id] = SearchResult(food=food, score=score)

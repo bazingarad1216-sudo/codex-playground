@@ -8,6 +8,8 @@ from pathlib import Path
 from .nutrients import KEY_NUTRIENTS
 from .toxicity import is_toxic_food_name
 
+_STOP_WORDS = {"and", "or", "the", "of"}
+
 
 @dataclass(frozen=True)
 class FoodRecord:
@@ -188,7 +190,8 @@ def _query_to_tokens(query: str) -> tuple[str, list[str]]:
     normalized = _normalize_query(query)
     if not normalized:
         return normalized, []
-    return normalized, [token for token in normalized.split(" ") if token]
+    tokens = [token for token in normalized.split(" ") if token and token not in _STOP_WORDS]
+    return normalized, tokens
 
 
 def search_foods(

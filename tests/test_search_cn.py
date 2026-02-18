@@ -91,3 +91,27 @@ def test_search_foods_cn_egg_match(tmp_path: Path) -> None:
 def test_expand_query_chicken_keyword_present_for_ji() -> None:
     expanded = [e.lower() for e in expand_query("鸡")]
     assert "chicken" in expanded
+
+
+def test_expand_query_chicken_meat_top5_contains_chicken() -> None:
+    expanded = [e.lower() for e in expand_query("鸡肉")]
+    assert "chicken" in expanded[:5]
+
+
+def test_expand_query_chicken_before_egg_for_ji() -> None:
+    expanded = [e.lower() for e in expand_query("鸡")]
+    assert "chicken" in expanded
+    assert "egg" in expanded
+    assert expanded.index("chicken") < expanded.index("egg")
+
+
+def test_search_foods_en_chicken_single_token_match(tmp_path: Path) -> None:
+    db_path = tmp_path / "foods.db"
+    with connect_db(db_path) as conn:
+        init_db(conn)
+        upsert_food(conn, name="Chicken, broiler or fryers, breast, skinless", kcal_per_100g=120.0, source="fdc", fdc_id=301)
+        conn.commit()
+        hits = search_foods(conn, "chicken", limit=10)
+
+    assert len(hits) >= 1
+    assert any("chicken" in h.name.lower() for h in hits)
