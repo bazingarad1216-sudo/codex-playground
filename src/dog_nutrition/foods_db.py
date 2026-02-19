@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ _TOXIC_KEYWORDS = (
 _TOKEN_SPLIT_RE = re.compile(r"[\s,;，；、]+")
 _STOPWORDS = {"and", "or", "&", "the"}
 _MAX_QUERY_TOKENS = 6
+_ZH_ALIAS_SEED_PATH = Path("data/aliases/zh_seed.csv")
 
 
 def connect_db(db_path: str | Path) -> sqlite3.Connection:
@@ -49,9 +51,21 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name)")
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name)"
+        """
+        CREATE TABLE IF NOT EXISTS food_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            food_id INTEGER NOT NULL,
+            lang TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY(food_id) REFERENCES foods(id) ON DELETE CASCADE,
+            UNIQUE(lang, alias, food_id)
+        )
+        """
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_food_aliases_lang_alias ON food_aliases(lang, alias)")
     conn.commit()
 
 
@@ -86,6 +100,49 @@ def upsert_food(
             """,
             (normalized_name, kcal_per_100g, source, fdc_id),
         )
+
+
+def add_food_alias(conn: sqlite3.Connection, food_id: int, lang: str, alias: str) -> None:
+    normalized_alias = alias.strip()
+    normalized_lang = lang.strip().lower()
+    if not normalized_alias:
+        raise ValueError("alias cannot be empty")
+    if not normalized_lang:
+        raise ValueError("lang cannot be empty")
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO food_aliases(food_id, lang, alias)
+        VALUES (?, ?, ?)
+        """,
+        (food_id, normalized_lang, normalized_alias),
+    )
+    conn.commit()
+
+
+def delete_food_alias(conn: sqlite3.Connection, alias_id: int) -> None:
+    conn.execute("DELETE FROM food_aliases WHERE id = ?", (alias_id,))
+    conn.commit()
+
+
+def get_food_aliases(conn: sqlite3.Connection, food_id: int, lang: str = "zh") -> list[str]:
+    rows = conn.execute(
+        "SELECT alias FROM food_aliases WHERE food_id = ? AND lang = ? ORDER BY alias ASC",
+        (food_id, lang.strip().lower()),
+    ).fetchall()
+    return [str(row["alias"]) for row in rows]
+
+
+def list_aliases(conn: sqlite3.Connection, lang: str = "zh") -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT a.id, a.food_id, a.lang, a.alias, a.created_at, f.name AS food_name
+        FROM food_aliases AS a
+        JOIN foods AS f ON f.id = a.food_id
+        WHERE a.lang = ?
+        ORDER BY a.food_id ASC, a.alias ASC
+        """,
+        (lang.strip().lower(),),
+    ).fetchall()
 
 
 def is_toxic_food_name(name: str) -> bool:
@@ -157,7 +214,6 @@ def search_foods(
     if records:
         return records
 
-    # Optional fallback: broaden to OR search when strict AND returns nothing.
     where_clause = " OR ".join("lower(name) LIKE ?" for _ in tokens)
     params = [f"%{token}%" for token in tokens]
     params.append(limit)
@@ -174,6 +230,50 @@ def search_foods(
     return _rows_to_records(rows)
 
 
+def search_foods_by_alias(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    lang: str = "zh",
+    limit: int = 20,
+) -> list[FoodRecord]:
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT f.id, f.name, f.kcal_per_100g, f.source, f.fdc_id
+        FROM food_aliases AS a
+        JOIN foods AS f ON f.id = a.food_id
+        WHERE a.lang = ? AND lower(a.alias) LIKE ?
+        ORDER BY a.alias ASC, f.name ASC
+        LIMIT ?
+        """,
+        (lang.strip().lower(), f"%{normalized_query}%", limit),
+    ).fetchall()
+    return _rows_to_records(rows)
+
+
+def _load_seed_alias_map() -> dict[str, list[str]]:
+    if not _ZH_ALIAS_SEED_PATH.exists():
+        return {}
+
+    mapping: dict[str, list[str]] = {}
+    with _ZH_ALIAS_SEED_PATH.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            alias = (row.get("alias") or "").strip().lower()
+            expands_to = (row.get("expands_to") or "").strip()
+            if not alias or not expands_to:
+                continue
+            candidates = [item.strip().lower() for item in expands_to.split("|") if item.strip()]
+            if not candidates:
+                continue
+            mapping[alias] = candidates
+    return mapping
+
+
 def expand_query(query: str) -> list[str]:
     normalized_query = query.strip().lower()
     expanded = [normalized_query]
@@ -184,6 +284,9 @@ def expand_query(query: str) -> list[str]:
         expanded.extend(["chicken", "chicken drumstick", "chicken breast"])
     elif "鸡蛋" in query:
         expanded.extend(["egg", "eggs"])
+
+    seed_map = _load_seed_alias_map()
+    expanded.extend(seed_map.get(normalized_query, []))
 
     seen: set[str] = set()
     deduped: list[str] = []
@@ -200,18 +303,28 @@ def search_foods_cn(
     *,
     limit: int = 20,
 ) -> list[FoodRecord]:
-    merged: dict[int, FoodRecord] = {}
+    merged: dict[int, tuple[int, FoodRecord]] = {}
+
+    for record in search_foods_by_alias(conn, query, lang="zh", limit=limit):
+        merged.setdefault(record.id, (0, record))
+
     for candidate in expand_query(query):
         for record in search_foods(conn, candidate, limit=limit):
-            merged.setdefault(record.id, record)
+            merged.setdefault(record.id, (1, record))
 
-    records = list(merged.values())
+    ranked = list(merged.values())
     raw_query = query.strip()
     if "鸡胸" in raw_query or "鸡肉" in raw_query:
-        records.sort(key=lambda r: ("chicken" not in r.name.lower(), r.name.lower()))
+        ranked.sort(
+            key=lambda pair: (
+                pair[0],
+                "chicken" not in pair[1].name.lower(),
+                pair[1].name.lower(),
+            )
+        )
     else:
-        records.sort(key=lambda r: r.name.lower())
-    return records[:limit]
+        ranked.sort(key=lambda pair: (pair[0], pair[1].name.lower()))
+    return [pair[1] for pair in ranked[:limit]]
 
 
 def calculate_kcal_for_grams(*, kcal_per_100g: float, grams: float) -> float:
