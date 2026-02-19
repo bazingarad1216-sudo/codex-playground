@@ -4,7 +4,13 @@ import os
 import streamlit as st
 
 from dog_nutrition.energy import ACTIVITY_FACTORS, calculate_mer, calculate_rer
-from dog_nutrition.foods_db import calculate_kcal_for_grams, connect_db, init_db, search_foods
+from dog_nutrition.foods_db import (
+    calculate_kcal_for_grams,
+    connect_db,
+    init_db,
+    search_foods,
+    search_foods_cn,
+)
 from dog_nutrition.models import DogProfile
 
 st.set_page_config(page_title="Dog Nutrition Energy Calculator", page_icon="🐶")
@@ -45,11 +51,16 @@ st.divider()
 st.header("Food search (offline)")
 
 food_db_path = os.environ.get("FOODS_DB_PATH", "foods.db")
-search_term = st.text_input("Search food name", placeholder="e.g. chicken")
+search_term = st.text_input("Search food name", placeholder="e.g. chicken / 鸡胸肉")
 
 with connect_db(food_db_path) as food_conn:
     init_db(food_conn)
-    matches = search_foods(food_conn, search_term, limit=20) if search_term.strip() else []
+    if not search_term.strip():
+        matches = []
+    elif any("\u4e00" <= ch <= "\u9fff" for ch in search_term):
+        matches = search_foods_cn(food_conn, search_term, limit=20)
+    else:
+        matches = search_foods(food_conn, search_term, limit=20)
 
 if not search_term.strip():
     st.caption("Enter a keyword to search foods from local SQLite DB.")
@@ -65,4 +76,8 @@ else:
         grams=float(grams),
     )
     st.metric("Calories", f"{kcal:.2f} kcal")
-    st.caption(f"source={selected_food.source}, fdc_id={selected_food.fdc_id}")
+    with st.expander("Nutrition panel", expanded=True):
+        st.write(f"- kcal per 100g: {selected_food.kcal_per_100g:.2f}")
+        st.write(f"- kcal for {grams:.0f}g: {kcal:.2f}")
+        st.write(f"- source: {selected_food.source}")
+        st.write(f"- fdc_id: {selected_food.fdc_id}")
