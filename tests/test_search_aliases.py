@@ -4,9 +4,11 @@ from dog_nutrition.foods_db import (
     add_food_alias,
     connect_db,
     expand_query,
+    get_food_aliases,
     init_db,
     search_foods,
     search_foods_cn,
+    seed_default_zh_aliases,
     upsert_food,
 )
 
@@ -19,6 +21,7 @@ def _seed_foods(conn) -> None:
         source="fdc",
         fdc_id=1,
     )
+    upsert_food(conn, name="Chicken, drumstick, meat only", kcal_per_100g=161.0, source="fdc", fdc_id=5)
     upsert_food(conn, name="Egg, whole, cooked", kcal_per_100g=155.0, source="fdc", fdc_id=2)
     upsert_food(conn, name="Lamb, leg, separable lean only", kcal_per_100g=206.0, source="fdc", fdc_id=3)
     upsert_food(conn, name="Beef, round, separable lean", kcal_per_100g=201.0, source="fdc", fdc_id=4)
@@ -35,7 +38,6 @@ def test_search_foods_chicken_breast_token_and(tmp_path: Path) -> None:
 
     comma_results = search_foods(conn, "chicken, breast")
     assert any("chicken" in item.name.lower() and "breast" in item.name.lower() for item in comma_results)
-
     conn.close()
 
 
@@ -45,11 +47,14 @@ def test_add_food_alias_and_search_foods_cn(tmp_path: Path) -> None:
     _seed_foods(conn)
 
     chicken = search_foods(conn, "chicken breast")[0]
-    add_food_alias(conn, chicken.id, "zh", "鸡胸肉")
+    add_food_alias(conn, chicken.id, "zh", "鸡胸肉", weight=120)
 
     results = search_foods_cn(conn, "鸡胸肉")
-    assert any(item.id == chicken.id for item in results)
+    assert results
+    assert "chicken" in results[0].name.lower() and "breast" in results[0].name.lower()
 
+    aliases = get_food_aliases(conn, chicken.id)
+    assert "鸡胸肉" in aliases
     conn.close()
 
 
@@ -69,5 +74,25 @@ def test_expand_query_mapping_for_lamb_and_beef(tmp_path: Path) -> None:
 
     beef_results = search_foods_cn(conn, "牛霖")
     assert any("beef" in item.name.lower() for item in beef_results)
+    conn.close()
 
+
+def test_search_foods_cn_sorting_rules(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path / "foods.sqlite")
+    init_db(conn)
+    _seed_foods(conn)
+    seed_default_zh_aliases(conn)
+
+    egg_results = search_foods_cn(conn, "鸡蛋")
+    assert egg_results
+    assert "egg" in egg_results[0].name.lower()
+
+    breast_results = search_foods_cn(conn, "鸡胸肉")
+    assert breast_results
+    assert "chicken" in breast_results[0].name.lower()
+    assert "breast" in breast_results[0].name.lower()
+
+    chicken_results = search_foods_cn(conn, "鸡")
+    top3 = chicken_results[:3]
+    assert any("chicken" in row.name.lower() for row in top3)
     conn.close()

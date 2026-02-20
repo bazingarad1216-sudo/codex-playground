@@ -14,6 +14,7 @@ from dog_nutrition.foods_db import (
     list_aliases,
     search_foods,
     search_foods_cn,
+    seed_default_zh_aliases,
 )
 from dog_nutrition.models import DogProfile
 
@@ -60,6 +61,7 @@ with search_tab:
 
     with connect_db(food_db_path) as food_conn:
         init_db(food_conn)
+        seed_default_zh_aliases(food_conn)
         if not search_term.strip():
             matches = []
         elif any("\u4e00" <= ch <= "\u9fff" for ch in search_term):
@@ -76,19 +78,27 @@ with search_tab:
             for item in matches:
                 zh_aliases = get_food_aliases(food_conn, item.id, lang="zh")
                 zh_name = zh_aliases[0] if zh_aliases else "(无中文别名)"
-                labels.append(f"{zh_name} ｜ {item.name} ({item.kcal_per_100g:.2f} kcal/100g)")
+                kcal_label = f"{item.kcal_per_100g:.2f} kcal/100g" if item.kcal_per_100g is not None else "kcal unavailable"
+                labels.append(f"{zh_name} ｜ {item.name} ({kcal_label})")
 
             selected_label = st.selectbox("Matched foods", options=labels)
             selected_food = matches[labels.index(selected_label)]
             grams = st.number_input("Grams", min_value=0.0, value=100.0, step=1.0)
-            kcal = calculate_kcal_for_grams(
-                kcal_per_100g=selected_food.kcal_per_100g,
-                grams=float(grams),
-            )
-            st.metric("Calories", f"{kcal:.2f} kcal")
+            if selected_food.kcal_per_100g is not None:
+                kcal = calculate_kcal_for_grams(
+                    kcal_per_100g=selected_food.kcal_per_100g,
+                    grams=float(grams),
+                )
+                st.metric("Calories", f"{kcal:.2f} kcal")
+            else:
+                kcal = None
+                st.metric("Calories", "N/A")
             with st.expander("Nutrition panel", expanded=True):
-                st.write(f"- kcal per 100g: {selected_food.kcal_per_100g:.2f}")
-                st.write(f"- kcal for {grams:.0f}g: {kcal:.2f}")
+                if selected_food.kcal_per_100g is not None:
+                    st.write(f"- kcal per 100g: {selected_food.kcal_per_100g:.2f}")
+                else:
+                    st.write("- kcal per 100g: N/A")
+                st.write(f"- kcal for {grams:.0f}g: {kcal:.2f}" if kcal is not None else f"- kcal for {grams:.0f}g: N/A")
                 st.write(f"- source: {selected_food.source}")
                 st.write(f"- fdc_id: {selected_food.fdc_id}")
 
@@ -96,12 +106,13 @@ with search_tab:
                 alias_input = st.text_input("添加中文别名", placeholder="例如：鸡胸肉")
                 save_alias = st.form_submit_button("保存别名")
                 if save_alias and alias_input.strip():
-                    add_food_alias(food_conn, selected_food.id, "zh", alias_input)
+                    add_food_alias(food_conn, selected_food.id, "zh", alias_input, weight=100)
                     st.success("别名已保存，下次搜索可直接命中")
 
 with alias_tab:
     with connect_db(food_db_path) as food_conn:
         init_db(food_conn)
+        seed_default_zh_aliases(food_conn)
         st.subheader("中文别名列表")
         rows = list_aliases(food_conn, lang="zh")
         if not rows:
@@ -109,7 +120,7 @@ with alias_tab:
         else:
             for row in rows:
                 col1, col2 = st.columns([5, 1])
-                col1.write(f"food_id={row['food_id']} | {row['alias']} | {row['food_name']}")
+                col1.write(f"food_id={row['food_id']} | alias={row['alias']} | weight={row['weight']} | {row['food_name']}")
                 if col2.button("删除", key=f"del_alias_{row['id']}"):
                     delete_food_alias(food_conn, int(row["id"]))
                     st.rerun()
