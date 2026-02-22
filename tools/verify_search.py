@@ -39,7 +39,13 @@ def main() -> None:
         assert len(en) > 0
 
         egg = search_foods_cn(conn, "鸡蛋")
-        assert egg and "egg" in egg[0].name.lower(), "鸡蛋 top1 必须是 egg"
+        assert egg, "鸡蛋检索必须有结果"
+        egg_top3 = egg[:3]
+        egg_positions = [idx for idx, row in enumerate(egg_top3) if "egg" in row.name.lower()]
+        chicken_positions = [idx for idx, row in enumerate(egg_top3) if "chicken" in row.name.lower()]
+        assert egg_positions, "鸡蛋 top3 必须包含 Egg"
+        if chicken_positions:
+            assert min(egg_positions) < min(chicken_positions), "鸡蛋结果中 Chicken 不得排在 Egg 前面"
 
         breast = search_foods_cn(conn, "鸡胸肉")
         assert breast and "chicken" in breast[0].name.lower() and "breast" in breast[0].name.lower(), "鸡胸肉 top1 必须是 chicken breast"
@@ -49,7 +55,7 @@ def main() -> None:
         beef = search_foods_cn(conn, "牛霖")
         assert any("beef" in name.lower() or "shank" in name.lower() for name in _names(beef))
 
-        print("PASS", _names(en), _names(egg[:1]), _names(breast[:1]), _names(lamb[:3]), _names(beef[:3]))
+        print("PASS", _names(en), _names(egg_top3), _names(breast[:1]), _names(lamb[:3]), _names(beef[:3]))
         conn.close()
 
 

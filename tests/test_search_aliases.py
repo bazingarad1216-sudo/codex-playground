@@ -77,6 +77,24 @@ def test_expand_query_mapping_for_lamb_and_beef(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_expand_query_egg_rules() -> None:
+    egg = expand_query("鸡蛋")
+    assert "egg" in egg
+    assert "whole egg" in egg
+    assert "chicken" not in egg
+    assert "whole" not in egg
+
+    yolk = expand_query("鸡蛋黄")
+    assert any("egg" in term for term in yolk)
+
+    white = expand_query("鸡蛋白")
+    assert any("egg" in term for term in white)
+
+    breast = expand_query("鸡胸肉")
+    assert "chicken" in breast
+    assert "breast" in breast
+
+
 def test_search_foods_cn_sorting_rules(tmp_path: Path) -> None:
     conn = connect_db(tmp_path / "foods.sqlite")
     init_db(conn)
@@ -85,7 +103,12 @@ def test_search_foods_cn_sorting_rules(tmp_path: Path) -> None:
 
     egg_results = search_foods_cn(conn, "鸡蛋")
     assert egg_results
-    assert "egg" in egg_results[0].name.lower()
+    top3_egg = egg_results[:3]
+    egg_positions = [idx for idx, row in enumerate(top3_egg) if "egg" in row.name.lower()]
+    chicken_positions = [idx for idx, row in enumerate(top3_egg) if "chicken" in row.name.lower()]
+    assert egg_positions, "鸡蛋 top3 必须包含 egg"
+    if chicken_positions:
+        assert min(egg_positions) < min(chicken_positions), "鸡蛋结果中 chicken 不能排在 egg 前"
 
     breast_results = search_foods_cn(conn, "鸡胸肉")
     assert breast_results

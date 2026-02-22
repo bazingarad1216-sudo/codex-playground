@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import csv
 import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+
+from .search import expand_query as expand_query_terms
 
 
 @dataclass(frozen=True)
@@ -29,8 +30,6 @@ _TOXIC_KEYWORDS = (
 _TOKEN_SPLIT_RE = re.compile(r"[\s,;，；、]+")
 _STOPWORDS = {"and", "or", "&", "the"}
 _MAX_QUERY_TOKENS = 6
-_ZH_ALIAS_SEED_PATH = Path("data/aliases/zh_seed.csv")
-
 _DEFAULT_ZH_ALIASES: dict[str, tuple[str, int]] = {
     "chicken breast": ("鸡胸肉", 100),
     "beef shank": ("牛腱", 95),
@@ -354,47 +353,8 @@ def search_foods_by_alias(
     return _rows_to_records(rows, require_kcal=require_kcal)
 
 
-def _load_seed_alias_map() -> dict[str, list[str]]:
-    if not _ZH_ALIAS_SEED_PATH.exists():
-        return {}
-
-    mapping: dict[str, list[str]] = {}
-    with _ZH_ALIAS_SEED_PATH.open("r", encoding="utf-8", newline="") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            alias = (row.get("alias") or "").strip().lower()
-            expands_to = (row.get("expands_to") or "").strip()
-            if not alias or not expands_to:
-                continue
-            candidates = [item.strip().lower() for item in expands_to.split("|") if item.strip()]
-            if candidates:
-                mapping[alias] = candidates
-    return mapping
-
-
 def expand_query(query: str) -> list[str]:
-    normalized_query = query.strip().lower()
-    expanded = [normalized_query]
-
-    if "鸡胸肉" in query:
-        expanded.extend(["chicken breast", "chicken", "breast"])
-    elif "鸡肉" in query:
-        expanded.extend(["chicken", "chicken drumstick", "chicken breast"])
-    elif query.strip() == "鸡":
-        expanded.extend(["chicken", "chicken breast", "chicken drumstick"])
-    elif any(token in query for token in ("鸡蛋", "蛋白", "蛋黄", "全蛋")):
-        expanded.extend(["egg", "whole egg", "egg yolk", "egg white"])
-
-    seed_map = _load_seed_alias_map()
-    expanded.extend(seed_map.get(normalized_query, []))
-
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for item in expanded:
-        if item and item not in seen:
-            seen.add(item)
-            deduped.append(item)
-    return deduped
+    return expand_query_terms(query)
 
 
 def _cn_intent_weights(query: str, name: str) -> tuple[int, int, int]:
