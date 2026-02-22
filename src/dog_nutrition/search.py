@@ -7,7 +7,7 @@ from pathlib import Path
 _ZH_ALIAS_SEED_PATH = Path("data/aliases/zh_seed.csv")
 _TERM_SPLIT_RE = re.compile(r"[\s,;，；、|]+")
 _STOPWORDS = {"and", "or", "&", "the", "whole"}
-_CHICKEN_INTENT_TOKENS = ("鸡胸", "鸡肉", "鸡腿", "鸡翅")
+_CHICKEN_INTENT_TOKENS = ("鸡胸", "鸡肉", "鸡腿", "鸡翅", "鸡胗", "鸡心", "鸡爪", "鸡肝")
 _EGG_INTENT_TOKENS = ("蛋", "蛋黄", "蛋白", "全蛋", "鸡蛋")
 
 

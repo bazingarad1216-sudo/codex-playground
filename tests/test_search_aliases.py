@@ -94,6 +94,9 @@ def test_expand_query_egg_rules() -> None:
     assert "chicken" in breast
     assert "breast" in breast
 
+    gizzard = expand_query("鸡胗")
+    assert "chicken" in gizzard
+
 
 def test_search_foods_cn_sorting_rules(tmp_path: Path) -> None:
     conn = connect_db(tmp_path / "foods.sqlite")
