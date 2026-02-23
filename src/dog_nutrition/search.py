@@ -13,6 +13,9 @@ class SearchResult:
     score: float
 
 
+_TOKEN_STOPWORDS = {"whole"}
+
+
 def _char_overlap_score(a: str, b: str) -> float:
     sa = set(a.lower().strip())
     sb = set(b.lower().strip())
@@ -22,7 +25,15 @@ def _char_overlap_score(a: str, b: str) -> float:
 
 
 def _term_tokens(term: str) -> list[str]:
-    return [token for token in re.split(r"[^a-z0-9]+", term.lower().strip()) if token]
+    return [
+        token for token in re.split(r"[^a-z0-9]+", term.lower().strip())
+        if token and token not in _TOKEN_STOPWORDS
+    ]
+
+
+def _is_egg_intent(query: str) -> bool:
+    q = query.strip().lower()
+    return any(marker in q for marker in ("鸡蛋", "蛋"))
 
 
 def expand_query(query: str) -> list[str]:
@@ -39,16 +50,23 @@ def expand_query(query: str) -> list[str]:
         token_terms.extend(_term_tokens(term))
 
     merged = list(dict.fromkeys([*expanded, *token_terms]))
+
+    if _is_egg_intent(q):
+        merged = [m for m in merged if m.lower() not in {"chicken", "whole"}]
+        if "egg" not in [m.lower() for m in merged]:
+            merged.insert(1 if len(merged) >= 1 else 0, "egg")
+        return merged
+
     if "鸡" in q:
-        if "chicken" in merged:
-            merged.remove("chicken")
+        lowered = [m.lower() for m in merged]
+        if "chicken" in lowered:
+            merged.pop(lowered.index("chicken"))
+            lowered = [m.lower() for m in merged]
         insert_idx = 1 if len(merged) >= 1 else 0
-        if "egg" in merged:
-            insert_idx = min(insert_idx, merged.index("egg"))
+        if "egg" in lowered:
+            insert_idx = min(insert_idx, lowered.index("egg"))
         merged.insert(insert_idx, "chicken")
     return merged
-
-
 
 
 def _term_weight(term: str, query: str) -> float:
@@ -59,7 +77,7 @@ def _term_weight(term: str, query: str) -> float:
         return 80.0
     if normalized in {"chicken", "breast", "drumstick", "poultry", "chicken breast"}:
         return 70.0
-    if normalized in {"egg", "whole egg", "white egg", "whole", "white"}:
+    if normalized in {"egg", "whole egg", "white egg", "white"}:
         return 40.0
     return 50.0
 
@@ -70,7 +88,11 @@ def search_foods_cn(conn, query: str, limit: int = 20) -> list[SearchResult]:
         term_base = _char_overlap_score(query, term)
         weight = _term_weight(term, query)
         for food in search_foods(conn, term, limit=limit):
-            score = weight + max(_char_overlap_score(query, food.name), _char_overlap_score(term, food.name), term_base)
+            score = weight + max(
+                _char_overlap_score(query, food.name),
+                _char_overlap_score(term, food.name),
+                term_base,
+            )
             prev = candidates.get(food.id)
             if prev is None or score > prev.score:
                 candidates[food.id] = SearchResult(food=food, score=score)
