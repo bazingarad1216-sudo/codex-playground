@@ -10,6 +10,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from dog_nutrition.foods_db import connect_db, init_db, search_foods, search_foods_cn, seed_default_zh_aliases, upsert_food
+from dog_nutrition.search import expand_query
 
 
 def _seed(conn) -> None:
@@ -38,6 +39,11 @@ def main() -> None:
         en = search_foods(conn, "chicken breast")
         assert len(en) > 0
 
+        egg_expand = expand_query("鸡蛋")
+        assert "chicken" not in egg_expand, "expand_query(鸡蛋) 不得包含 chicken"
+        assert "whole" not in egg_expand, "expand_query(鸡蛋) 不得包含裸 token whole"
+        assert "egg" in egg_expand, "expand_query(鸡蛋) 必须包含 egg"
+
         egg = search_foods_cn(conn, "鸡蛋")
         assert egg, "鸡蛋检索必须有结果"
         egg_top3 = egg[:3]
@@ -55,6 +61,8 @@ def main() -> None:
         beef = search_foods_cn(conn, "牛霖")
         assert any("beef" in name.lower() or "shank" in name.lower() for name in _names(beef))
 
+        print("expand_query(鸡蛋)[:10] =", egg_expand[:10])
+        print("鸡蛋 top3 =", _names(egg_top3))
         print("PASS", _names(en), _names(egg_top3), _names(breast[:1]), _names(lamb[:3]), _names(beef[:3]))
         conn.close()
 
