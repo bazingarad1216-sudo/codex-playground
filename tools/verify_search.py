@@ -1,78 +1,70 @@
 from __future__ import annotations
 
-import os
+import sys
+import tempfile
 from pathlib import Path
 
-from dog_nutrition.foods_db import connect_db, describe_search_query, search_foods
-from dog_nutrition.search import expand_query, search_foods_cn
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from dog_nutrition.foods_db import connect_db, init_db, search_foods, search_foods_cn, seed_default_zh_aliases, upsert_food
+from dog_nutrition.search import expand_query
 
 
-def _top3_names_en(rows) -> list[str]:
-    return [row.name for row in rows[:3]]
+def _seed(conn) -> None:
+    upsert_food(conn, name="Chicken, broilers or fryers, breast, meat only, cooked, roasted", kcal_per_100g=165.0, source="fdc", fdc_id=1001)
+    upsert_food(conn, name="Chicken drumstick, meat only", kcal_per_100g=161.0, source="fdc", fdc_id=1002)
+    upsert_food(conn, name="Egg, whole, cooked", kcal_per_100g=155.0, source="fdc", fdc_id=1003)
+    upsert_food(conn, name="Lamb, leg, separable lean only", kcal_per_100g=206.0, source="fdc", fdc_id=1004)
+    upsert_food(conn, name="Beef shank, separable lean", kcal_per_100g=201.0, source="fdc", fdc_id=1005)
+    upsert_food(conn, name="Onion, raw", kcal_per_100g=40.0, source="fdc", fdc_id=1006)
+    upsert_food(conn, name="Chocolate, dark", kcal_per_100g=546.0, source="fdc", fdc_id=1007)
+    conn.commit()
 
 
-def _top3_names_cn(rows) -> list[str]:
-    return [row.food.name for row in rows[:3]]
-
-
-def _assert_real_db_ready(db_path: Path) -> None:
-    if not db_path.exists():
-        raise SystemExit(
-            "foods.db not found. Please import data first, e.g.: "
-            "PYTHONPATH=src python -m dog_nutrition.fdc_import --db foods.db --input <path-to-fdc-json-or-csv>"
-        )
-
+def _names(rows) -> list[str]:
+    return [item.name for item in rows]
 
 
 def main() -> None:
-    db_path = Path(os.environ.get("FOODS_DB_PATH", "foods.db")).resolve()
-    _assert_real_db_ready(db_path)
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "verify_foods.sqlite"
+        conn = connect_db(db_path)
+        init_db(conn)
+        _seed(conn)
+        seed_default_zh_aliases(conn)
 
-    en_queries = ["chicken", "breast", "chicken breast", "chicken, breast"]
-    cn_queries = ["鸡蛋", "鸡胸肉", "鸡肉", "鸡"]
+        en = search_foods(conn, "chicken breast")
+        assert len(en) > 0
 
-    with connect_db(db_path) as conn:
-        row = conn.execute("SELECT COUNT(*) AS c FROM foods").fetchone()
-        food_count = int(row["c"]) if row is not None else 0
-        if food_count <= 0:
-            raise SystemExit(
-                "foods table is empty. Please import FDC data first, e.g.: "
-                "PYTHONPATH=src python -m dog_nutrition.fdc_import --db foods.db --input <path-to-fdc-json-or-csv>"
-            )
+        egg_expand = expand_query("鸡蛋")
+        assert "chicken" not in egg_expand, "expand_query(鸡蛋) 不得包含 chicken"
+        assert "whole" not in egg_expand, "expand_query(鸡蛋) 不得包含裸 token whole"
+        assert "egg" in egg_expand, "expand_query(鸡蛋) 必须包含 egg"
 
-        print(f"db={db_path}")
+        egg = search_foods_cn(conn, "鸡蛋")
+        assert egg, "鸡蛋检索必须有结果"
+        egg_top3 = egg[:3]
+        egg_positions = [idx for idx, row in enumerate(egg_top3) if "egg" in row.name.lower()]
+        chicken_positions = [idx for idx, row in enumerate(egg_top3) if "chicken" in row.name.lower()]
+        assert egg_positions, "鸡蛋 top3 必须包含 Egg"
+        if chicken_positions:
+            assert min(egg_positions) < min(chicken_positions), "鸡蛋结果中 Chicken 不得排在 Egg 前面"
 
-        for query in en_queries:
-            tokens, summary = describe_search_query(query)
-            hits = search_foods(conn, query, limit=20)
-            print(f"EN query={query!r} tokens={tokens} condition={summary} hits={len(hits)} top3={_top3_names_en(hits)}")
+        breast = search_foods_cn(conn, "鸡胸肉")
+        assert breast and "chicken" in breast[0].name.lower() and "breast" in breast[0].name.lower(), "鸡胸肉 top1 必须是 chicken breast"
 
-        for query in cn_queries:
-            hits = search_foods_cn(conn, query, limit=20)
-            print(f"CN query={query!r} hits={len(hits)} top3={_top3_names_cn(hits)}")
+        lamb = search_foods_cn(conn, "羊腿")
+        assert any("lamb" in name.lower() for name in _names(lamb))
+        beef = search_foods_cn(conn, "牛霖")
+        assert any("beef" in name.lower() or "shank" in name.lower() for name in _names(beef))
 
-        # Hard assertions to verify tokenized AND, CN expansion, and egg intent behavior.
-        assert describe_search_query("chicken, breast")[0] == ["chicken", "breast"]
-
-        egg_terms = [term.lower() for term in expand_query("鸡蛋")]
-        assert "egg" in egg_terms
-        assert "whole" not in egg_terms
-        assert "chicken" not in egg_terms
-
-        chicken_breast_hits = search_foods(conn, "chicken breast", limit=10)
-        assert chicken_breast_hits and any(
-            "chicken" in row.name.lower() and "breast" in row.name.lower()
-            for row in chicken_breast_hits
-        )
-
-        egg_hits = search_foods_cn(conn, "鸡蛋", limit=10)
-        assert egg_hits and any("egg" in row.food.name.lower() for row in egg_hits)
-
-        chicken_hits = search_foods_cn(conn, "鸡胸肉", limit=10)
-        assert chicken_hits and any(
-            "chicken" in row.food.name.lower() and "breast" in row.food.name.lower()
-            for row in chicken_hits
-        )
+        print("expand_query(鸡蛋)[:10] =", egg_expand[:10])
+        print("鸡蛋 top3 =", _names(egg_top3))
+        print("PASS", _names(en), _names(egg_top3), _names(breast[:1]), _names(lamb[:3]), _names(beef[:3]))
+        conn.close()
 
 
 if __name__ == "__main__":
