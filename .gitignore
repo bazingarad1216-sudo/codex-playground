@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+foods.db
+*.bak
+*.patch
+*.tmp
+
+data/fdc/*.json
+data/fdc/*.csv
+
+.DS_Store

@@ -103,6 +103,19 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS food_nutrients (
+            food_id INTEGER NOT NULL,
+            nutrient_key TEXT NOT NULL,
+            amount_per_100g REAL NOT NULL,
+            PRIMARY KEY(food_id, nutrient_key),
+            FOREIGN KEY(food_id) REFERENCES foods(id) ON DELETE CASCADE,
+            FOREIGN KEY(nutrient_key) REFERENCES nutrient_meta(nutrient_key)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_food_nutrients_key ON food_nutrients(nutrient_key)")
     conn.commit()
 
 
@@ -338,6 +351,16 @@ def search_foods_by_alias(
     normalized_query = query.strip().lower()
     if not normalized_query:
         return []
+
+    q, tokens = _query_to_tokens(query)
+    if not q:
+        return []
+    if tokens:
+        where_clause = " AND ".join(["lower(name) LIKE ?" for _ in tokens])
+        params = [f"%{token}%" for token in tokens]
+    else:
+        where_clause = "lower(name) LIKE ?"
+        params = [f"%{q}%"]
 
     rows = conn.execute(
         """
