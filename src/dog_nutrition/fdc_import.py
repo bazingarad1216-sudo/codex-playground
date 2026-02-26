@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sqlite3
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from .foods_db import connect_db, init_db, upsert_food
+from .foods_db import (
+    connect_db,
+    init_db,
+    upsert_food,
+    upsert_food_nutrient,
+    upsert_nutrient_meta,
+)
+from .nutrients import FDC_NUTRIENT_TO_KEY, KEY_NUTRIENTS
 
-
-ENERGY_NUTRIENT_NUMBERS = {"1008"}
-ENERGY_NUTRIENT_NAMES = {
-    "Energy",
-    "Energy (Atwater General Factors)",
-    "Energy (Atwater Specific Factors)",
-    "Energy (kcal)",
-}
+_JSON_FOOD_LIST_KEYS = ("foods", "FoundationFoods", "SRLegacyFoods", "SurveyFoods", "BrandedFoods")
 
 
 def _to_float(value: Any) -> float | None:
@@ -28,135 +28,159 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-def _extract_energy_from_nutrients(nutrients: list[dict[str, Any]]) -> float | None:
-    for nutrient in nutrients:
-        number = str(nutrient.get("nutrientNumber", "")).strip()
-        name = str(nutrient.get("nutrientName", "")).strip()
-        if number in ENERGY_NUTRIENT_NUMBERS or name in ENERGY_NUTRIENT_NAMES:
-            amount = _to_float(nutrient.get("value") or nutrient.get("amount"))
-            if amount is not None:
-                return amount
-    return None
-
-
-def _extract_record_from_json_item(item: dict[str, Any]) -> tuple[str, float, int | None] | None:
-    name = str(item.get("description") or item.get("name") or "").strip()
-    if not name:
-        return None
-
-    fdc_id_value = item.get("fdcId") or item.get("fdc_id")
-    fdc_id = int(fdc_id_value) if isinstance(fdc_id_value, int) or str(fdc_id_value).isdigit() else None
-
-    kcal = _to_float(item.get("kcal_per_100g") or item.get("energy_kcal") or item.get("energy"))
-    if kcal is None:
-        nutrients = item.get("foodNutrients")
-        if isinstance(nutrients, list):
-            kcal = _extract_energy_from_nutrients(nutrients)
-    if kcal is None:
-        return None
-
-    return name, kcal, fdc_id
-
-
-def import_from_json(conn: sqlite3.Connection, json_path: Path, source: str) -> tuple[int, int]:
-    data = json.loads(json_path.read_text(encoding="utf-8"))
+def _extract_foods(data: Any) -> list[dict[str, Any]]:
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
     if isinstance(data, dict):
-        foods = data.get("foods")
-        if not isinstance(foods, list):
-            raise ValueError("JSON file must contain a top-level list or a 'foods' list field")
-    elif isinstance(data, list):
-        foods = data
-    else:
-        raise ValueError("Unsupported JSON structure")
+        for key in _JSON_FOOD_LIST_KEYS:
+            val = data.get(key)
+            if isinstance(val, list):
+                return [x for x in val if isinstance(x, dict)]
+    return []
 
+
+def _extract_nutrients(item: dict[str, Any]) -> list[dict[str, Any]]:
+    val = item.get("foodNutrients")
+    return [x for x in val if isinstance(x, dict)] if isinstance(val, list) else []
+
+
+def _derive_energy(nutr_map: dict[str, float]) -> tuple[float | None, int]:
+    if "energy_kcal" in nutr_map:
+        return nutr_map["energy_kcal"], 0
+    if "energy_kj" in nutr_map:
+        return nutr_map["energy_kj"] / 4.184, 0
+    if {"protein", "fat", "carbohydrate"}.issubset(nutr_map.keys()):
+        kcal = nutr_map["protein"] * 4 + nutr_map["fat"] * 9 + nutr_map["carbohydrate"] * 4
+        return kcal, 1
+    return None, 0
+
+
+def _seed_nutrient_meta(conn: sqlite3.Connection) -> None:
+    for key, (name, unit, fdc_number) in KEY_NUTRIENTS.items():
+        upsert_nutrient_meta(
+            conn,
+            nutrient_key=key,
+            nutrient_name=name,
+            unit=unit,
+            fdc_nutrient_number=fdc_number,
+        )
+
+
+def _import_json_file(conn: sqlite3.Connection, path: Path, source: str, dataset: str) -> tuple[int, int, Counter[str]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    foods = _extract_foods(data)
     imported = 0
-    skipped_missing_energy = 0
+    skipped = 0
+    reasons: Counter[str] = Counter()
+
     for item in foods:
-        if not isinstance(item, dict):
+        name = str(item.get("description") or item.get("name") or "").strip()
+        if not name:
+            reasons["missing_name"] += 1
             continue
-        parsed = _extract_record_from_json_item(item)
-        if parsed is None:
-            skipped_missing_energy += 1
-            continue
-        name, kcal, fdc_id = parsed
-        upsert_food(conn, name=name, kcal_per_100g=kcal, source=source, fdc_id=fdc_id)
+
+        fdc_id_val = item.get("fdcId") or item.get("fdc_id")
+        fdc_id = int(fdc_id_val) if isinstance(fdc_id_val, int) or str(fdc_id_val).isdigit() else None
+
+        nutrients = _extract_nutrients(item)
+        nutr_map: dict[str, float] = {}
+        for nutrient in nutrients:
+            code = str(nutrient.get("nutrientNumber") or nutrient.get("number") or "").strip()
+            key = FDC_NUTRIENT_TO_KEY.get(code)
+            if not key:
+                continue
+            amount = _to_float(nutrient.get("value") if nutrient.get("value") is not None else nutrient.get("amount"))
+            if amount is None:
+                continue
+            nutr_map[key] = amount
+
+        kcal, energy_estimated = _derive_energy(nutr_map)
+        if kcal is None:
+            skipped += 1
+            reasons["missing_energy"] += 1
+
+        food_id = upsert_food(
+            conn,
+            name=name,
+            kcal_per_100g=kcal,
+            source=f"{source}:{dataset}",
+            fdc_id=fdc_id,
+            energy_estimated=energy_estimated,
+        )
+
+        for key, amount in nutr_map.items():
+            upsert_food_nutrient(conn, food_id=food_id, nutrient_key=key, amount_per_100g=amount)
+
         imported += 1
 
     conn.commit()
-    return imported, skipped_missing_energy
+    return imported, skipped, reasons
 
 
-def _extract_record_from_csv_row(row: dict[str, str]) -> tuple[str, float, int | None] | None:
-    name = (row.get("description") or row.get("name") or "").strip()
-    if not name:
-        return None
-
-    fdc_id_raw = (row.get("fdc_id") or row.get("fdcId") or "").strip()
-    fdc_id = int(fdc_id_raw) if fdc_id_raw.isdigit() else None
-
-    kcal = _to_float(
-        row.get("kcal_per_100g")
-        or row.get("energy_kcal")
-        or row.get("energy")
-        or row.get("Energy")
-    )
-    if kcal is None:
-        return None
-
-    return name, kcal, fdc_id
+def _collect_input_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        json_files = sorted(path.glob("*_food_json_*.json"))
+        return json_files if json_files else sorted(path.glob("*.json"))
+    return []
 
 
-def import_from_csv(conn: sqlite3.Connection, csv_path: Path, source: str) -> tuple[int, int]:
-    imported = 0
-    skipped_missing_energy = 0
-    with csv_path.open("r", encoding="utf-8", newline="") as fh:
-        reader = csv.DictReader(fh)
-        for row in reader:
-            parsed = _extract_record_from_csv_row(row)
-            if parsed is None:
-                skipped_missing_energy += 1
-                continue
-            name, kcal, fdc_id = parsed
-            upsert_food(conn, name=name, kcal_per_100g=kcal, source=source, fdc_id=fdc_id)
-            imported += 1
-    conn.commit()
-    return imported, skipped_missing_energy
-
-
-def run_import(*, db_path: Path, input_path: Path, source: str = "fdc") -> tuple[int, int]:
+def run_import(
+    *,
+    db_path: Path,
+    source: str = "fdc",
+    input_path: Path | None = None,
+    input_paths: list[Path] | None = None,
+):
     conn = connect_db(db_path)
     try:
         init_db(conn)
-        suffix = input_path.suffix.lower()
-        if suffix == ".json":
-            return import_from_json(conn, input_path, source)
-        if suffix == ".csv":
-            return import_from_csv(conn, input_path, source)
-        raise ValueError("Unsupported file type. Use .json or .csv")
+        _seed_nutrient_meta(conn)
+
+        if input_paths is None:
+            if input_path is None:
+                raise ValueError("input_path or input_paths is required")
+            paths = [input_path]
+        else:
+            paths = input_paths
+
+        imported_total = 0
+        skipped_total = 0
+        by_dataset: dict[str, int] = defaultdict(int)
+        reasons: Counter[str] = Counter()
+
+        for root in paths:
+            for file_path in _collect_input_files(root):
+                dataset = file_path.stem.lower()
+                imported, skipped, rs = _import_json_file(conn, file_path, source, dataset)
+                imported_total += imported
+                skipped_total += skipped
+                by_dataset[dataset] += imported
+                reasons.update(rs)
+
+        if input_paths is None:
+            return imported_total, skipped_total
+        return imported_total, skipped_total, dict(by_dataset), reasons.most_common(8)
     finally:
         conn.close()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Import local FDC data into SQLite")
-    parser.add_argument("--db", required=True, help="SQLite DB path")
-    parser.add_argument("--input", required=True, help="Local FDC JSON/CSV file path")
-    parser.add_argument("--source", default="fdc", help="Data source label")
+    parser.add_argument("--db", required=True)
+    parser.add_argument("--input", action="append", required=True)
+    parser.add_argument("--source", default="fdc")
     args = parser.parse_args()
 
-    db_path = Path(args.db)
-    input_path = Path(args.input)
-    if not input_path.exists():
-        raise SystemExit(f"Input file not found: {input_path}")
-
-    imported, skipped_missing_energy = run_import(
-        db_path=db_path,
-        input_path=input_path,
+    imported, skipped, by_dataset, reasons = run_import(
+        db_path=Path(args.db),
+        input_paths=[Path(x) for x in args.input],
         source=args.source,
     )
-    print(
-        f"Import done. imported={imported} skipped_missing_energy={skipped_missing_energy} db={db_path}"
-    )
+    print(f"Import done. imported={imported} skipped_missing_energy={skipped} db={args.db}")
+    print(f"By dataset: {by_dataset}")
+    print(f"Skip reasons top: {reasons}")
 
 
 if __name__ == "__main__":
