@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 
 from dog_nutrition.fdc_import import run_import
-from dog_nutrition.foods_db import connect_db
+from dog_nutrition.foods_db import connect_db, get_food_nutrients
 
 
-def test_run_import_supports_multi_inputs_and_estimated_energy(tmp_path: Path) -> None:
+def test_run_import_supports_input_paths_and_estimated_energy(tmp_path: Path) -> None:
     db = tmp_path / "foods.sqlite"
     input_dir = tmp_path / "fdc"
     input_dir.mkdir()
@@ -16,9 +16,9 @@ def test_run_import_supports_multi_inputs_and_estimated_energy(tmp_path: Path) -
                 "fdcId": 1,
                 "description": "Lamb, leg, roasted",
                 "foodNutrients": [
-                    {"nutrientNumber": "1003", "nutrientName": "Protein", "value": 20},
-                    {"nutrientNumber": "1004", "nutrientName": "Total lipid (fat)", "value": 10},
-                    {"nutrientNumber": "1005", "nutrientName": "Carbohydrate", "value": 0},
+                    {"nutrientNumber": "1003", "value": 20},
+                    {"nutrientNumber": "1004", "value": 10},
+                    {"nutrientNumber": "1005", "value": 0},
                 ],
             }
         ]
@@ -29,7 +29,7 @@ def test_run_import_supports_multi_inputs_and_estimated_energy(tmp_path: Path) -
                 "fdcId": 2,
                 "description": "Beef shank, braised",
                 "foodNutrients": [
-                    {"nutrientNumber": "1008", "nutrientName": "Energy", "value": 210},
+                    {"nutrientNumber": "1008", "value": 210},
                 ],
             }
         ]
@@ -43,8 +43,21 @@ def test_run_import_supports_multi_inputs_and_estimated_energy(tmp_path: Path) -
     assert by_dataset
 
     conn = connect_db(db)
-    lamb = conn.execute("select kcal_per_100g, energy_estimated from foods where fdc_id = 1").fetchone()
+    lamb = conn.execute("select id, kcal_per_100g, energy_estimated from foods where fdc_id = 1").fetchone()
     assert lamb is not None
-    assert lamb[0] is not None
-    assert lamb[1] == 1
+    assert lamb[1] is not None
+    assert lamb[2] == 1
+    nutrients = get_food_nutrients(conn, int(lamb[0]))
+    assert "protein" in nutrients
     conn.close()
+
+
+def test_run_import_single_input_path_returns_two_values(tmp_path: Path) -> None:
+    db = tmp_path / "foods.sqlite"
+    file_path = tmp_path / "foods.json"
+    data = {"foods": [{"fdcId": 10, "description": "Egg, whole", "foodNutrients": [{"nutrientNumber": "1008", "value": 150}]}]}
+    file_path.write_text(json.dumps(data), encoding="utf-8")
+
+    imported, skipped = run_import(db_path=db, input_path=file_path, source="fdc")
+    assert imported == 1
+    assert skipped == 0

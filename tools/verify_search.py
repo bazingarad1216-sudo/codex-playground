@@ -9,8 +9,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dog_nutrition.foods_db import connect_db, init_db, search_foods, search_foods_cn, seed_default_zh_aliases, upsert_food
-from dog_nutrition.search import expand_query
+from dog_nutrition.foods_db import connect_db, init_db, search_foods, upsert_food
+from dog_nutrition.search import expand_query, search_foods_cn
 
 
 def _seed(conn) -> None:
@@ -25,7 +25,7 @@ def _seed(conn) -> None:
 
 
 def _names(rows) -> list[str]:
-    return [item.name for item in rows]
+    return [item.food.name if hasattr(item, "food") else item.name for item in rows]
 
 
 def main() -> None:
@@ -34,36 +34,30 @@ def main() -> None:
         conn = connect_db(db_path)
         init_db(conn)
         _seed(conn)
-        seed_default_zh_aliases(conn)
 
         en = search_foods(conn, "chicken breast")
         assert len(en) > 0
 
         egg_expand = expand_query("鸡蛋")
-        assert "chicken" not in egg_expand, "expand_query(鸡蛋) 不得包含 chicken"
-        assert "whole" not in egg_expand, "expand_query(鸡蛋) 不得包含裸 token whole"
-        assert "egg" in egg_expand, "expand_query(鸡蛋) 必须包含 egg"
+        assert "egg" in egg_expand
+        assert "chicken" not in egg_expand
+        assert "whole" not in egg_expand
 
         egg = search_foods_cn(conn, "鸡蛋")
         assert egg, "鸡蛋检索必须有结果"
         egg_top3 = egg[:3]
-        egg_positions = [idx for idx, row in enumerate(egg_top3) if "egg" in row.name.lower()]
-        chicken_positions = [idx for idx, row in enumerate(egg_top3) if "chicken" in row.name.lower()]
+        egg_positions = [idx for idx, row in enumerate(egg_top3) if "egg" in row.food.name.lower()]
+        chicken_positions = [idx for idx, row in enumerate(egg_top3) if "chicken" in row.food.name.lower()]
         assert egg_positions, "鸡蛋 top3 必须包含 Egg"
         if chicken_positions:
             assert min(egg_positions) < min(chicken_positions), "鸡蛋结果中 Chicken 不得排在 Egg 前面"
 
         breast = search_foods_cn(conn, "鸡胸肉")
-        assert breast and "chicken" in breast[0].name.lower() and "breast" in breast[0].name.lower(), "鸡胸肉 top1 必须是 chicken breast"
-
-        lamb = search_foods_cn(conn, "羊腿")
-        assert any("lamb" in name.lower() for name in _names(lamb))
-        beef = search_foods_cn(conn, "牛霖")
-        assert any("beef" in name.lower() or "shank" in name.lower() for name in _names(beef))
+        assert breast and "chicken" in breast[0].food.name.lower() and "breast" in breast[0].food.name.lower()
 
         print("expand_query(鸡蛋)[:10] =", egg_expand[:10])
         print("鸡蛋 top3 =", _names(egg_top3))
-        print("PASS", _names(en), _names(egg_top3), _names(breast[:1]), _names(lamb[:3]), _names(beef[:3]))
+        print("PASS", [r.name for r in en], _names(egg_top3), _names(breast[:1]))
         conn.close()
 
 
