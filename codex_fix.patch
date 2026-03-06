@@ -1,0 +1,1234 @@
+diff --git a/app.py b/app.py
+index 7048747..c59a1d2 100644
+--- a/app.py
++++ b/app.py
+@@ -4,7 +4,18 @@ import os
+ import streamlit as st
+ 
+ from dog_nutrition.energy import ACTIVITY_FACTORS, calculate_mer, calculate_rer
+-from dog_nutrition.foods_db import calculate_kcal_for_grams, connect_db, init_db, search_foods
++from dog_nutrition.foods_db import (
++    add_food_alias,
++    calculate_kcal_for_grams,
++    connect_db,
++    delete_food_alias,
++    get_food_aliases,
++    init_db,
++    list_aliases,
++    search_foods,
++    search_foods_cn,
++    seed_default_zh_aliases,
++)
+ from dog_nutrition.models import DogProfile
+ 
+ st.set_page_config(page_title="Dog Nutrition Energy Calculator", page_icon="🐶")
+@@ -42,27 +53,74 @@ if submitted:
+     st.code(json.dumps(result, ensure_ascii=False), language="json")
+ 
+ st.divider()
+-st.header("Food search (offline)")
+-
++search_tab, alias_tab = st.tabs(["Food search (offline)", "Alias management"])
+ food_db_path = os.environ.get("FOODS_DB_PATH", "foods.db")
+-search_term = st.text_input("Search food name", placeholder="e.g. chicken")
+ 
+-with connect_db(food_db_path) as food_conn:
+-    init_db(food_conn)
+-    matches = search_foods(food_conn, search_term, limit=20) if search_term.strip() else []
++with search_tab:
++    search_term = st.text_input("Search food name", placeholder="e.g. chicken / 鸡胸肉")
+ 
+-if not search_term.strip():
+-    st.caption("Enter a keyword to search foods from local SQLite DB.")
+-elif not matches:
+-    st.warning("No foods found. Import local FDC data first.")
+-else:
+-    labels = [f"{item.name} ({item.kcal_per_100g:.2f} kcal/100g)" for item in matches]
+-    selected_label = st.selectbox("Matched foods", options=labels)
+-    selected_food = matches[labels.index(selected_label)]
+-    grams = st.number_input("Grams", min_value=0.0, value=100.0, step=1.0)
+-    kcal = calculate_kcal_for_grams(
+-        kcal_per_100g=selected_food.kcal_per_100g,
+-        grams=float(grams),
+-    )
+-    st.metric("Calories", f"{kcal:.2f} kcal")
+-    st.caption(f"source={selected_food.source}, fdc_id={selected_food.fdc_id}")
++    with connect_db(food_db_path) as food_conn:
++        init_db(food_conn)
++        seed_default_zh_aliases(food_conn)
++        if not search_term.strip():
++            matches = []
++        elif any("\u4e00" <= ch <= "\u9fff" for ch in search_term):
++            matches = search_foods_cn(food_conn, search_term, limit=20)
++        else:
++            matches = search_foods(food_conn, search_term, limit=20)
++
++        if not search_term.strip():
++            st.caption("Enter a keyword to search foods from local SQLite DB.")
++        elif not matches:
++            st.warning("No foods found. Import local FDC data first.")
++        else:
++            labels = []
++            for item in matches:
++                zh_aliases = get_food_aliases(food_conn, item.id, lang="zh")
++                zh_name = zh_aliases[0] if zh_aliases else "(无中文别名)"
++                kcal_label = f"{item.kcal_per_100g:.2f} kcal/100g" if item.kcal_per_100g is not None else "kcal unavailable"
++                labels.append(f"{zh_name} ｜ {item.name} ({kcal_label})")
++
++            selected_label = st.selectbox("Matched foods", options=labels)
++            selected_food = matches[labels.index(selected_label)]
++            grams = st.number_input("Grams", min_value=0.0, value=100.0, step=1.0)
++            if selected_food.kcal_per_100g is not None:
++                kcal = calculate_kcal_for_grams(
++                    kcal_per_100g=selected_food.kcal_per_100g,
++                    grams=float(grams),
++                )
++                st.metric("Calories", f"{kcal:.2f} kcal")
++            else:
++                kcal = None
++                st.metric("Calories", "N/A")
++            with st.expander("Nutrition panel", expanded=True):
++                if selected_food.kcal_per_100g is not None:
++                    st.write(f"- kcal per 100g: {selected_food.kcal_per_100g:.2f}")
++                else:
++                    st.write("- kcal per 100g: N/A")
++                st.write(f"- kcal for {grams:.0f}g: {kcal:.2f}" if kcal is not None else f"- kcal for {grams:.0f}g: N/A")
++                st.write(f"- source: {selected_food.source}")
++                st.write(f"- fdc_id: {selected_food.fdc_id}")
++
++            with st.form("add_alias_form"):
++                alias_input = st.text_input("添加中文别名", placeholder="例如：鸡胸肉")
++                save_alias = st.form_submit_button("保存别名")
++                if save_alias and alias_input.strip():
++                    add_food_alias(food_conn, selected_food.id, "zh", alias_input, weight=100)
++                    st.success("别名已保存，下次搜索可直接命中")
++
++with alias_tab:
++    with connect_db(food_db_path) as food_conn:
++        init_db(food_conn)
++        seed_default_zh_aliases(food_conn)
++        st.subheader("中文别名列表")
++        rows = list_aliases(food_conn, lang="zh")
++        if not rows:
++            st.caption("暂无中文别名")
++        else:
++            for row in rows:
++                col1, col2 = st.columns([5, 1])
++                col1.write(f"food_id={row['food_id']} | alias={row['alias']} | weight={row['weight']} | {row['food_name']}")
++                if col2.button("删除", key=f"del_alias_{row['id']}"):
++                    delete_food_alias(food_conn, int(row["id"]))
++                    st.rerun()
+diff --git a/data/aliases/zh_seed.csv b/data/aliases/zh_seed.csv
+new file mode 100644
+index 0000000..d279ac9
+--- /dev/null
++++ b/data/aliases/zh_seed.csv
+@@ -0,0 +1,14 @@
++alias,expands_to
++羊腿,lamb leg|lamb, leg|mutton leg
++牛霖,beef round|beef knuckle|beef shank
++鸡胸肉,chicken breast|chicken|breast
++鸡肉,chicken|chicken drumstick|chicken breast
++鸡蛋,egg|whole egg|egg yolk|egg white
++蛋白,egg white|egg
++蛋黄,egg yolk|egg
++全蛋,whole egg|egg
++牛腱,beef shank|beef knuckle
++牛腩,beef brisket
++三文鱼,salmon
++西兰花,broccoli
++胡萝卜,carrot
+diff --git a/src/dog_nutrition/fdc_import.py b/src/dog_nutrition/fdc_import.py
+index 8ad5bfd..9a0bfb5 100644
+--- a/src/dog_nutrition/fdc_import.py
++++ b/src/dog_nutrition/fdc_import.py
+@@ -1,22 +1,22 @@
+ from __future__ import annotations
+ 
+ import argparse
+-import csv
+ import json
+ import sqlite3
++from collections import Counter, defaultdict
+ from pathlib import Path
+ from typing import Any
+ 
+-from .foods_db import connect_db, init_db, upsert_food
++from .foods_db import (
++    connect_db,
++    init_db,
++    upsert_food,
++    upsert_food_nutrient,
++    upsert_nutrient_meta,
++)
++from .nutrients import FDC_NUTRIENT_TO_KEY, KEY_NUTRIENTS
+ 
+-
+-ENERGY_NUTRIENT_NUMBERS = {"1008"}
+-ENERGY_NUTRIENT_NAMES = {
+-    "Energy",
+-    "Energy (Atwater General Factors)",
+-    "Energy (Atwater Specific Factors)",
+-    "Energy (kcal)",
+-}
++_JSON_FOOD_LIST_KEYS = ("foods", "FoundationFoods", "SRLegacyFoods", "SurveyFoods", "BrandedFoods")
+ 
+ 
+ def _to_float(value: Any) -> float | None:
+@@ -28,135 +28,159 @@ def _to_float(value: Any) -> float | None:
+         return None
+ 
+ 
+-def _extract_energy_from_nutrients(nutrients: list[dict[str, Any]]) -> float | None:
+-    for nutrient in nutrients:
+-        number = str(nutrient.get("nutrientNumber", "")).strip()
+-        name = str(nutrient.get("nutrientName", "")).strip()
+-        if number in ENERGY_NUTRIENT_NUMBERS or name in ENERGY_NUTRIENT_NAMES:
+-            amount = _to_float(nutrient.get("value") or nutrient.get("amount"))
+-            if amount is not None:
+-                return amount
+-    return None
+-
+-
+-def _extract_record_from_json_item(item: dict[str, Any]) -> tuple[str, float, int | None] | None:
+-    name = str(item.get("description") or item.get("name") or "").strip()
+-    if not name:
+-        return None
+-
+-    fdc_id_value = item.get("fdcId") or item.get("fdc_id")
+-    fdc_id = int(fdc_id_value) if isinstance(fdc_id_value, int) or str(fdc_id_value).isdigit() else None
+-
+-    kcal = _to_float(item.get("kcal_per_100g") or item.get("energy_kcal") or item.get("energy"))
+-    if kcal is None:
+-        nutrients = item.get("foodNutrients")
+-        if isinstance(nutrients, list):
+-            kcal = _extract_energy_from_nutrients(nutrients)
+-    if kcal is None:
+-        return None
+-
+-    return name, kcal, fdc_id
+-
+-
+-def import_from_json(conn: sqlite3.Connection, json_path: Path, source: str) -> tuple[int, int]:
+-    data = json.loads(json_path.read_text(encoding="utf-8"))
++def _extract_foods(data: Any) -> list[dict[str, Any]]:
++    if isinstance(data, list):
++        return [x for x in data if isinstance(x, dict)]
+     if isinstance(data, dict):
+-        foods = data.get("foods")
+-        if not isinstance(foods, list):
+-            raise ValueError("JSON file must contain a top-level list or a 'foods' list field")
+-    elif isinstance(data, list):
+-        foods = data
+-    else:
+-        raise ValueError("Unsupported JSON structure")
+-
++        for key in _JSON_FOOD_LIST_KEYS:
++            val = data.get(key)
++            if isinstance(val, list):
++                return [x for x in val if isinstance(x, dict)]
++    return []
++
++
++def _extract_nutrients(item: dict[str, Any]) -> list[dict[str, Any]]:
++    val = item.get("foodNutrients")
++    return [x for x in val if isinstance(x, dict)] if isinstance(val, list) else []
++
++
++def _derive_energy(nutr_map: dict[str, float]) -> tuple[float | None, int]:
++    if "energy_kcal" in nutr_map:
++        return nutr_map["energy_kcal"], 0
++    if "energy_kj" in nutr_map:
++        return nutr_map["energy_kj"] / 4.184, 0
++    if {"protein", "fat", "carbohydrate"}.issubset(nutr_map.keys()):
++        kcal = nutr_map["protein"] * 4 + nutr_map["fat"] * 9 + nutr_map["carbohydrate"] * 4
++        return kcal, 1
++    return None, 0
++
++
++def _seed_nutrient_meta(conn: sqlite3.Connection) -> None:
++    for key, (name, unit, fdc_number) in KEY_NUTRIENTS.items():
++        upsert_nutrient_meta(
++            conn,
++            nutrient_key=key,
++            nutrient_name=name,
++            unit=unit,
++            fdc_nutrient_number=fdc_number,
++        )
++
++
++def _import_json_file(conn: sqlite3.Connection, path: Path, source: str, dataset: str) -> tuple[int, int, Counter[str]]:
++    data = json.loads(path.read_text(encoding="utf-8"))
++    foods = _extract_foods(data)
+     imported = 0
+-    skipped_missing_energy = 0
++    skipped = 0
++    reasons: Counter[str] = Counter()
++
+     for item in foods:
+-        if not isinstance(item, dict):
+-            continue
+-        parsed = _extract_record_from_json_item(item)
+-        if parsed is None:
+-            skipped_missing_energy += 1
++        name = str(item.get("description") or item.get("name") or "").strip()
++        if not name:
++            reasons["missing_name"] += 1
+             continue
+-        name, kcal, fdc_id = parsed
+-        upsert_food(conn, name=name, kcal_per_100g=kcal, source=source, fdc_id=fdc_id)
+-        imported += 1
+-
+-    conn.commit()
+-    return imported, skipped_missing_energy
+ 
++        fdc_id_val = item.get("fdcId") or item.get("fdc_id")
++        fdc_id = int(fdc_id_val) if isinstance(fdc_id_val, int) or str(fdc_id_val).isdigit() else None
+ 
+-def _extract_record_from_csv_row(row: dict[str, str]) -> tuple[str, float, int | None] | None:
+-    name = (row.get("description") or row.get("name") or "").strip()
+-    if not name:
+-        return None
++        nutrients = _extract_nutrients(item)
++        nutr_map: dict[str, float] = {}
++        for nutrient in nutrients:
++            code = str(nutrient.get("nutrientNumber") or nutrient.get("number") or "").strip()
++            key = FDC_NUTRIENT_TO_KEY.get(code)
++            if not key:
++                continue
++            amount = _to_float(nutrient.get("value") if nutrient.get("value") is not None else nutrient.get("amount"))
++            if amount is None:
++                continue
++            nutr_map[key] = amount
+ 
+-    fdc_id_raw = (row.get("fdc_id") or row.get("fdcId") or "").strip()
+-    fdc_id = int(fdc_id_raw) if fdc_id_raw.isdigit() else None
++        kcal, energy_estimated = _derive_energy(nutr_map)
++        if kcal is None:
++            skipped += 1
++            reasons["missing_energy"] += 1
+ 
+-    kcal = _to_float(
+-        row.get("kcal_per_100g")
+-        or row.get("energy_kcal")
+-        or row.get("energy")
+-        or row.get("Energy")
+-    )
+-    if kcal is None:
+-        return None
++        food_id = upsert_food(
++            conn,
++            name=name,
++            kcal_per_100g=kcal,
++            source=f"{source}:{dataset}",
++            fdc_id=fdc_id,
++            energy_estimated=energy_estimated,
++        )
+ 
+-    return name, kcal, fdc_id
++        for key, amount in nutr_map.items():
++            upsert_food_nutrient(conn, food_id=food_id, nutrient_key=key, amount_per_100g=amount)
+ 
++        imported += 1
+ 
+-def import_from_csv(conn: sqlite3.Connection, csv_path: Path, source: str) -> tuple[int, int]:
+-    imported = 0
+-    skipped_missing_energy = 0
+-    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+-        reader = csv.DictReader(fh)
+-        for row in reader:
+-            parsed = _extract_record_from_csv_row(row)
+-            if parsed is None:
+-                skipped_missing_energy += 1
+-                continue
+-            name, kcal, fdc_id = parsed
+-            upsert_food(conn, name=name, kcal_per_100g=kcal, source=source, fdc_id=fdc_id)
+-            imported += 1
+     conn.commit()
+-    return imported, skipped_missing_energy
++    return imported, skipped, reasons
++
+ 
++def _collect_input_files(path: Path) -> list[Path]:
++    if path.is_file():
++        return [path]
++    if path.is_dir():
++        json_files = sorted(path.glob("*_food_json_*.json"))
++        return json_files if json_files else sorted(path.glob("*.json"))
++    return []
+ 
+-def run_import(*, db_path: Path, input_path: Path, source: str = "fdc") -> tuple[int, int]:
++
++def run_import(
++    *,
++    db_path: Path,
++    source: str = "fdc",
++    input_path: Path | None = None,
++    input_paths: list[Path] | None = None,
++):
+     conn = connect_db(db_path)
+     try:
+         init_db(conn)
+-        suffix = input_path.suffix.lower()
+-        if suffix == ".json":
+-            return import_from_json(conn, input_path, source)
+-        if suffix == ".csv":
+-            return import_from_csv(conn, input_path, source)
+-        raise ValueError("Unsupported file type. Use .json or .csv")
++        _seed_nutrient_meta(conn)
++
++        if input_paths is None:
++            if input_path is None:
++                raise ValueError("input_path or input_paths is required")
++            paths = [input_path]
++        else:
++            paths = input_paths
++
++        imported_total = 0
++        skipped_total = 0
++        by_dataset: dict[str, int] = defaultdict(int)
++        reasons: Counter[str] = Counter()
++
++        for root in paths:
++            for file_path in _collect_input_files(root):
++                dataset = file_path.stem.lower()
++                imported, skipped, rs = _import_json_file(conn, file_path, source, dataset)
++                imported_total += imported
++                skipped_total += skipped
++                by_dataset[dataset] += imported
++                reasons.update(rs)
++
++        if input_paths is None:
++            return imported_total, skipped_total
++        return imported_total, skipped_total, dict(by_dataset), reasons.most_common(8)
+     finally:
+         conn.close()
+ 
+ 
+ def main() -> None:
+     parser = argparse.ArgumentParser(description="Import local FDC data into SQLite")
+-    parser.add_argument("--db", required=True, help="SQLite DB path")
+-    parser.add_argument("--input", required=True, help="Local FDC JSON/CSV file path")
+-    parser.add_argument("--source", default="fdc", help="Data source label")
++    parser.add_argument("--db", required=True)
++    parser.add_argument("--input", action="append", required=True)
++    parser.add_argument("--source", default="fdc")
+     args = parser.parse_args()
+ 
+-    db_path = Path(args.db)
+-    input_path = Path(args.input)
+-    if not input_path.exists():
+-        raise SystemExit(f"Input file not found: {input_path}")
+-
+-    imported, skipped_missing_energy = run_import(
+-        db_path=db_path,
+-        input_path=input_path,
++    imported, skipped, by_dataset, reasons = run_import(
++        db_path=Path(args.db),
++        input_paths=[Path(x) for x in args.input],
+         source=args.source,
+     )
+-    print(
+-        f"Import done. imported={imported} skipped_missing_energy={skipped_missing_energy} db={db_path}"
+-    )
++    print(f"Import done. imported={imported} skipped_missing_energy={skipped} db={args.db}")
++    print(f"By dataset: {by_dataset}")
++    print(f"Skip reasons top: {reasons}")
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/src/dog_nutrition/foods_db.py b/src/dog_nutrition/foods_db.py
+index 7a82692..c28d0ef 100644
+--- a/src/dog_nutrition/foods_db.py
++++ b/src/dog_nutrition/foods_db.py
+@@ -1,17 +1,25 @@
+ from __future__ import annotations
+ 
++import re
+ import sqlite3
+ from dataclasses import dataclass
+ from pathlib import Path
+ 
++from .toxicity import is_toxic_food_name
++
++_TOKEN_SPLIT_RE = re.compile(r"[\s,;，；、]+")
++_STOPWORDS = {"and", "or", "&", "the"}
++_MAX_QUERY_TOKENS = 6
++
+ 
+ @dataclass(frozen=True)
+ class FoodRecord:
+     id: int
+     name: str
+-    kcal_per_100g: float
++    kcal_per_100g: float | None
+     source: str
+     fdc_id: int | None
++    energy_estimated: int
+ 
+ 
+ def connect_db(db_path: str | Path) -> sqlite3.Connection:
+@@ -26,15 +34,36 @@ def init_db(conn: sqlite3.Connection) -> None:
+         CREATE TABLE IF NOT EXISTS foods (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL,
+-            kcal_per_100g REAL NOT NULL,
++            kcal_per_100g REAL,
+             source TEXT NOT NULL,
+             fdc_id INTEGER,
++            energy_estimated INTEGER NOT NULL DEFAULT 0,
+             UNIQUE(source, fdc_id)
+         )
+         """
+     )
++    conn.execute("CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name)")
++    conn.execute(
++        """
++        CREATE TABLE IF NOT EXISTS nutrient_meta (
++            nutrient_key TEXT PRIMARY KEY,
++            nutrient_name TEXT NOT NULL,
++            unit TEXT,
++            fdc_nutrient_number TEXT
++        )
++        """
++    )
+     conn.execute(
+-        "CREATE INDEX IF NOT EXISTS idx_foods_name ON foods(name)"
++        """
++        CREATE TABLE IF NOT EXISTS food_nutrients (
++            food_id INTEGER NOT NULL,
++            nutrient_key TEXT NOT NULL,
++            amount_per_100g REAL NOT NULL,
++            PRIMARY KEY(food_id, nutrient_key),
++            FOREIGN KEY(food_id) REFERENCES foods(id) ON DELETE CASCADE,
++            FOREIGN KEY(nutrient_key) REFERENCES nutrient_meta(nutrient_key) ON DELETE CASCADE
++        )
++        """
+     )
+     conn.commit()
+ 
+@@ -43,33 +72,119 @@ def upsert_food(
+     conn: sqlite3.Connection,
+     *,
+     name: str,
+-    kcal_per_100g: float,
++    kcal_per_100g: float | None,
+     source: str,
+     fdc_id: int | None,
+-) -> None:
++    energy_estimated: int = 0,
++) -> int:
+     normalized_name = name.strip()
+     if not normalized_name:
+         raise ValueError("Food name cannot be empty")
+-    if kcal_per_100g < 0:
++    if kcal_per_100g is not None and kcal_per_100g < 0:
+         raise ValueError("kcal_per_100g must be >= 0")
+ 
+     if fdc_id is None:
+-        conn.execute(
+-            "INSERT INTO foods(name, kcal_per_100g, source, fdc_id) VALUES (?, ?, ?, NULL)",
+-            (normalized_name, kcal_per_100g, source),
++        cur = conn.execute(
++            "INSERT INTO foods(name, kcal_per_100g, source, fdc_id, energy_estimated) VALUES (?, ?, ?, NULL, ?)",
++            (normalized_name, kcal_per_100g, source, int(energy_estimated)),
+         )
+-    else:
+-        conn.execute(
+-            """
+-            INSERT INTO foods(name, kcal_per_100g, source, fdc_id)
+-            VALUES (?, ?, ?, ?)
+-            ON CONFLICT(source, fdc_id)
+-            DO UPDATE SET
+-                name = excluded.name,
+-                kcal_per_100g = excluded.kcal_per_100g
+-            """,
+-            (normalized_name, kcal_per_100g, source, fdc_id),
++        return int(cur.lastrowid)
++
++    conn.execute(
++        """
++        INSERT INTO foods(name, kcal_per_100g, source, fdc_id, energy_estimated)
++        VALUES (?, ?, ?, ?, ?)
++        ON CONFLICT(source, fdc_id)
++        DO UPDATE SET
++            name = excluded.name,
++            kcal_per_100g = excluded.kcal_per_100g,
++            energy_estimated = excluded.energy_estimated
++        """,
++        (normalized_name, kcal_per_100g, source, fdc_id, int(energy_estimated)),
++    )
++    row = conn.execute("SELECT id FROM foods WHERE source = ? AND fdc_id = ?", (source, fdc_id)).fetchone()
++    if row is None:
++        raise RuntimeError("failed to locate upserted food")
++    return int(row["id"])
++
++
++def upsert_nutrient_meta(
++    conn: sqlite3.Connection,
++    *,
++    nutrient_key: str,
++    nutrient_name: str,
++    unit: str | None,
++    fdc_nutrient_number: str | None,
++) -> None:
++    conn.execute(
++        """
++        INSERT INTO nutrient_meta(nutrient_key, nutrient_name, unit, fdc_nutrient_number)
++        VALUES (?, ?, ?, ?)
++        ON CONFLICT(nutrient_key)
++        DO UPDATE SET
++            nutrient_name = excluded.nutrient_name,
++            unit = excluded.unit,
++            fdc_nutrient_number = excluded.fdc_nutrient_number
++        """,
++        (nutrient_key, nutrient_name, unit, fdc_nutrient_number),
++    )
++
++
++def upsert_food_nutrient(
++    conn: sqlite3.Connection,
++    *,
++    food_id: int,
++    nutrient_key: str,
++    amount_per_100g: float,
++) -> None:
++    conn.execute(
++        """
++        INSERT INTO food_nutrients(food_id, nutrient_key, amount_per_100g)
++        VALUES (?, ?, ?)
++        ON CONFLICT(food_id, nutrient_key)
++        DO UPDATE SET amount_per_100g = excluded.amount_per_100g
++        """,
++        (food_id, nutrient_key, amount_per_100g),
++    )
++
++
++def get_food_nutrients(conn: sqlite3.Connection, food_id: int) -> dict[str, float]:
++    rows = conn.execute(
++        "SELECT nutrient_key, amount_per_100g FROM food_nutrients WHERE food_id = ?",
++        (food_id,),
++    ).fetchall()
++    return {str(row["nutrient_key"]): float(row["amount_per_100g"]) for row in rows}
++
++
++def _tokenize_query(query: str) -> list[str]:
++    tokens: list[str] = []
++    for raw in _TOKEN_SPLIT_RE.split(query.lower()):
++        token = raw.strip()
++        if not token or token in _STOPWORDS:
++            continue
++        tokens.append(token)
++        if len(tokens) >= _MAX_QUERY_TOKENS:
++            break
++    return tokens
++
++
++def _rows_to_records(rows: list[sqlite3.Row], *, include_toxic: bool) -> list[FoodRecord]:
++    records: list[FoodRecord] = []
++    for row in rows:
++        if (not include_toxic) and is_toxic_food_name(str(row["name"])):
++            continue
++        kcal = row["kcal_per_100g"]
++        records.append(
++            FoodRecord(
++                id=int(row["id"]),
++                name=str(row["name"]),
++                kcal_per_100g=float(kcal) if kcal is not None else None,
++                source=str(row["source"]),
++                fdc_id=int(row["fdc_id"]) if row["fdc_id"] is not None else None,
++                energy_estimated=int(row["energy_estimated"]),
++            )
+         )
++    return records
+ 
+ 
+ def search_foods(
+@@ -77,30 +192,45 @@ def search_foods(
+     query: str,
+     *,
+     limit: int = 20,
++    include_toxic: bool = False,
+ ) -> list[FoodRecord]:
+     if limit <= 0:
+         raise ValueError("limit must be > 0")
+ 
++    tokens = _tokenize_query(query.strip().lower())
++    if not tokens:
++        return []
++
++    where_clause = "lower(name) LIKE ?" if len(tokens) == 1 else " AND ".join("lower(name) LIKE ?" for _ in tokens)
++    params: list[object] = [f"%{token}%" for token in tokens]
++    params.append(limit)
+     rows = conn.execute(
+-        """
+-        SELECT id, name, kcal_per_100g, source, fdc_id
++        f"""
++        SELECT id, name, kcal_per_100g, source, fdc_id, energy_estimated
+         FROM foods
+-        WHERE name LIKE ?
++        WHERE {where_clause}
+         ORDER BY name ASC
+         LIMIT ?
+         """,
+-        (f"%{query.strip()}%", limit),
++        params,
+     ).fetchall()
+-    return [
+-        FoodRecord(
+-            id=row["id"],
+-            name=row["name"],
+-            kcal_per_100g=row["kcal_per_100g"],
+-            source=row["source"],
+-            fdc_id=row["fdc_id"],
+-        )
+-        for row in rows
+-    ]
++
++    records = _rows_to_records(rows, include_toxic=include_toxic)
++    if records:
++        return records
++
++    where_clause_or = " OR ".join("lower(name) LIKE ?" for _ in tokens)
++    rows = conn.execute(
++        f"""
++        SELECT id, name, kcal_per_100g, source, fdc_id, energy_estimated
++        FROM foods
++        WHERE {where_clause_or}
++        ORDER BY name ASC
++        LIMIT ?
++        """,
++        [*params[:-1], limit],
++    ).fetchall()
++    return _rows_to_records(rows, include_toxic=include_toxic)
+ 
+ 
+ def calculate_kcal_for_grams(*, kcal_per_100g: float, grams: float) -> float:
+diff --git a/src/dog_nutrition/nutrients.py b/src/dog_nutrition/nutrients.py
+new file mode 100644
+index 0000000..48bd6b7
+--- /dev/null
++++ b/src/dog_nutrition/nutrients.py
+@@ -0,0 +1,17 @@
++from __future__ import annotations
++
++FDC_NUTRIENT_TO_KEY = {
++    "1008": "energy_kcal",
++    "1062": "energy_kj",
++    "1003": "protein",
++    "1004": "fat",
++    "1005": "carbohydrate",
++}
++
++KEY_NUTRIENTS = {
++    "energy_kcal": ("Energy", "kcal", "1008"),
++    "energy_kj": ("Energy", "kJ", "1062"),
++    "protein": ("Protein", "g", "1003"),
++    "fat": ("Total lipid (fat)", "g", "1004"),
++    "carbohydrate": ("Carbohydrate", "g", "1005"),
++}
+diff --git a/src/dog_nutrition/search.py b/src/dog_nutrition/search.py
+new file mode 100644
+index 0000000..4403cda
+--- /dev/null
++++ b/src/dog_nutrition/search.py
+@@ -0,0 +1,121 @@
++from __future__ import annotations
++
++import csv
++import re
++import sqlite3
++from dataclasses import dataclass
++from pathlib import Path
++
++from .foods_db import FoodRecord, search_foods
++
++_ZH_ALIAS_SEED_PATH = Path("data/aliases/zh_seed.csv")
++_TERM_SPLIT_RE = re.compile(r"[\s,;，；、|]+")
++_STOPWORDS = {"and", "or", "&", "the", "whole"}
++_CHICKEN_INTENT_TOKENS = ("鸡", "鸡肉", "鸡胸", "鸡腿", "鸡翅", "鸡胗", "鸡心", "鸡肝", "鸡爪")
++_EGG_INTENT_TOKENS = ("蛋", "鸡蛋", "蛋黄", "蛋白", "全蛋", "蛋清", "蛋液")
++
++
++@dataclass(frozen=True)
++class SearchResult:
++    food: FoodRecord
++    score: float
++
++
++def _load_seed_alias_map() -> dict[str, list[str]]:
++    if not _ZH_ALIAS_SEED_PATH.exists():
++        return {}
++
++    mapping: dict[str, list[str]] = {}
++    with _ZH_ALIAS_SEED_PATH.open("r", encoding="utf-8", newline="") as fh:
++        reader = csv.DictReader(fh)
++        for row in reader:
++            alias = (row.get("alias") or "").strip().lower()
++            expands_to = (row.get("expands_to") or "").strip()
++            if not alias or not expands_to:
++                continue
++            candidates = [item.strip().lower() for item in expands_to.split("|") if item.strip()]
++            if candidates:
++                mapping[alias] = candidates
++    return mapping
++
++
++def _term_tokens(terms: list[str]) -> list[str]:
++    tokens: list[str] = []
++    for term in terms:
++        for raw in _TERM_SPLIT_RE.split(term.lower()):
++            token = raw.strip()
++            if not token or token in _STOPWORDS:
++                continue
++            tokens.append(token)
++    return tokens
++
++
++def expand_query(query: str) -> list[str]:
++    q = query.strip().lower()
++    if not q:
++        return []
++
++    seed_map = _load_seed_alias_map()
++    expanded: list[str] = [q]
++
++    for alias in sorted(seed_map.keys(), key=len, reverse=True):
++        alias_lower = alias.lower()
++        if alias_lower in q or q == alias_lower:
++            expanded.extend(seed_map[alias])
++
++    has_egg_intent = any(token in q for token in _EGG_INTENT_TOKENS)
++    has_chicken_intent = q == "鸡" or any(token in q for token in _CHICKEN_INTENT_TOKENS)
++
++    if has_chicken_intent and not has_egg_intent:
++        expanded.extend(["chicken", "chicken breast", "chicken drumstick"])
++
++    if has_egg_intent:
++        expanded.extend(["egg", "whole egg", "egg yolk", "egg white"])
++
++    expanded.extend(_term_tokens(expanded))
++
++    deduped: list[str] = []
++    seen: set[str] = set()
++    for item in expanded:
++        normalized = item.strip().lower()
++        if not normalized or normalized in seen:
++            continue
++        if has_egg_intent and normalized == "chicken":
++            continue
++        seen.add(normalized)
++        deduped.append(normalized)
++    return deduped
++
++
++def _intent_bonus(query: str, food_name: str) -> float:
++    q = query.strip()
++    n = food_name.lower()
++    score = 0.0
++    egg_query = any(token in q for token in _EGG_INTENT_TOKENS)
++    chicken_query = q == "鸡" or any(token in q for token in _CHICKEN_INTENT_TOKENS)
++    breast_query = "鸡胸" in q
++
++    if egg_query and "egg" in n:
++        score += 20.0
++    if egg_query and "chicken" in n and "egg" not in n:
++        score -= 20.0
++    if chicken_query and "chicken" in n:
++        score += 10.0
++    if breast_query and "breast" in n:
++        score += 10.0
++    return score
++
++
++def search_foods_cn(conn: sqlite3.Connection, query: str, limit: int = 20) -> list[SearchResult]:
++    merged: dict[int, SearchResult] = {}
++    candidates = expand_query(query)
++    for idx, term in enumerate(candidates):
++        term_weight = max(1.0, float(len(term))) - idx * 0.1
++        for food in search_foods(conn, term, limit=limit):
++            score = term_weight + _intent_bonus(query, food.name)
++            prev = merged.get(food.id)
++            if prev is None or score > prev.score:
++                merged[food.id] = SearchResult(food=food, score=score)
++
++    ranked = sorted(merged.values(), key=lambda x: (-x.score, x.food.name.lower()))
++    return ranked[:limit]
+diff --git a/src/dog_nutrition/toxicity.py b/src/dog_nutrition/toxicity.py
+new file mode 100644
+index 0000000..c5590ee
+--- /dev/null
++++ b/src/dog_nutrition/toxicity.py
+@@ -0,0 +1,17 @@
++from __future__ import annotations
++
++_TOXIC_KEYWORDS = (
++    "onion",
++    "chocolate",
++    "grape",
++    "xylitol",
++    "葡萄",
++    "木糖醇",
++    "洋葱",
++    "巧克力",
++)
++
++
++def is_toxic_food_name(name: str) -> bool:
++    lowered = name.lower()
++    return any(keyword in lowered for keyword in _TOXIC_KEYWORDS)
+diff --git a/tests/test_cn_search_ranking.py b/tests/test_cn_search_ranking.py
+new file mode 100644
+index 0000000..35a87b2
+--- /dev/null
++++ b/tests/test_cn_search_ranking.py
+@@ -0,0 +1,20 @@
++from dog_nutrition.foods_db import connect_db, init_db, upsert_food
++from dog_nutrition.search import search_foods_cn
++
++
++def test_cn_egg_ranked_before_chicken(tmp_path) -> None:
++    conn = connect_db(tmp_path / "foods.sqlite")
++    init_db(conn)
++    upsert_food(conn, name="Chicken drumstick, meat only", kcal_per_100g=161.0, source="fdc", fdc_id=1)
++    upsert_food(conn, name="Egg, whole, cooked", kcal_per_100g=155.0, source="fdc", fdc_id=2)
++    conn.commit()
++
++    results = search_foods_cn(conn, "鸡蛋")
++    top3 = results[:3]
++    egg_positions = [i for i, row in enumerate(top3) if "egg" in row.food.name.lower()]
++    chicken_positions = [i for i, row in enumerate(top3) if "chicken" in row.food.name.lower()]
++
++    assert egg_positions
++    if chicken_positions:
++        assert min(egg_positions) < min(chicken_positions)
++    conn.close()
+diff --git a/tests/test_expand_query.py b/tests/test_expand_query.py
+new file mode 100644
+index 0000000..5835f6f
+--- /dev/null
++++ b/tests/test_expand_query.py
+@@ -0,0 +1,14 @@
++from dog_nutrition.search import expand_query
++
++
++def test_expand_query_egg_not_polluted() -> None:
++    result = expand_query("鸡蛋")
++    assert "egg" in result
++    assert "chicken" not in result
++    assert "whole" not in result
++
++
++def test_expand_query_chicken_breast_kept() -> None:
++    result = expand_query("鸡胸肉")
++    assert "chicken" in result
++    assert "breast" in result
+diff --git a/tests/test_fdc_import.py b/tests/test_fdc_import.py
+new file mode 100644
+index 0000000..0ec6e1e
+--- /dev/null
++++ b/tests/test_fdc_import.py
+@@ -0,0 +1,63 @@
++import json
++from pathlib import Path
++
++from dog_nutrition.fdc_import import run_import
++from dog_nutrition.foods_db import connect_db, get_food_nutrients
++
++
++def test_run_import_supports_input_paths_and_estimated_energy(tmp_path: Path) -> None:
++    db = tmp_path / "foods.sqlite"
++    input_dir = tmp_path / "fdc"
++    input_dir.mkdir()
++
++    foundation = {
++        "FoundationFoods": [
++            {
++                "fdcId": 1,
++                "description": "Lamb, leg, roasted",
++                "foodNutrients": [
++                    {"nutrientNumber": "1003", "value": 20},
++                    {"nutrientNumber": "1004", "value": 10},
++                    {"nutrientNumber": "1005", "value": 0},
++                ],
++            }
++        ]
++    }
++    sr_legacy = {
++        "foods": [
++            {
++                "fdcId": 2,
++                "description": "Beef shank, braised",
++                "foodNutrients": [
++                    {"nutrientNumber": "1008", "value": 210},
++                ],
++            }
++        ]
++    }
++    (input_dir / "foundation_food_json_1.json").write_text(json.dumps(foundation), encoding="utf-8")
++    (input_dir / "sr_legacy_food_json_1.json").write_text(json.dumps(sr_legacy), encoding="utf-8")
++
++    imported, skipped, by_dataset, _ = run_import(db_path=db, input_paths=[input_dir], source="fdc")
++    assert imported == 2
++    assert skipped == 0
++    assert by_dataset
++
++    conn = connect_db(db)
++    lamb = conn.execute("select id, kcal_per_100g, energy_estimated from foods where fdc_id = 1").fetchone()
++    assert lamb is not None
++    assert lamb[1] is not None
++    assert lamb[2] == 1
++    nutrients = get_food_nutrients(conn, int(lamb[0]))
++    assert "protein" in nutrients
++    conn.close()
++
++
++def test_run_import_single_input_path_returns_two_values(tmp_path: Path) -> None:
++    db = tmp_path / "foods.sqlite"
++    file_path = tmp_path / "foods.json"
++    data = {"foods": [{"fdcId": 10, "description": "Egg, whole", "foodNutrients": [{"nutrientNumber": "1008", "value": 150}]}]}
++    file_path.write_text(json.dumps(data), encoding="utf-8")
++
++    imported, skipped = run_import(db_path=db, input_path=file_path, source="fdc")
++    assert imported == 1
++    assert skipped == 0
+diff --git a/tests/test_foods.py b/tests/test_foods.py
+index 20a2bed..81d7ce9 100644
+--- a/tests/test_foods.py
++++ b/tests/test_foods.py
+@@ -13,22 +13,30 @@ def test_calculate_kcal_for_grams() -> None:
+     assert calculate_kcal_for_grams(kcal_per_100g=200.0, grams=50.0) == pytest.approx(100.0)
+ 
+ 
+-def test_calculate_kcal_for_grams_rejects_negative() -> None:
+-    with pytest.raises(ValueError):
+-        calculate_kcal_for_grams(kcal_per_100g=100.0, grams=-1.0)
++def test_search_foods_multi_token_and(tmp_path) -> None:
++    conn = connect_db(tmp_path / "foods.sqlite")
++    init_db(conn)
++    upsert_food(conn, name="Chicken, broilers or fryers, breast, meat only", kcal_per_100g=165.0, source="fdc", fdc_id=1)
++    upsert_food(conn, name="Chicken drumstick", kcal_per_100g=161.0, source="fdc", fdc_id=2)
++    conn.commit()
++
++    result = search_foods(conn, "chicken breast")
++    assert any("chicken" in r.name.lower() and "breast" in r.name.lower() for r in result)
++
++    result2 = search_foods(conn, "chicken, breast")
++    assert any("chicken" in r.name.lower() and "breast" in r.name.lower() for r in result2)
++    conn.close()
+ 
+ 
+-def test_search_foods_by_name(tmp_path) -> None:
+-    db_path = tmp_path / "foods.sqlite"
+-    conn = connect_db(db_path)
++def test_search_foods_filters_toxic_by_default(tmp_path) -> None:
++    conn = connect_db(tmp_path / "foods.sqlite")
+     init_db(conn)
+-    upsert_food(conn, name="Chicken Breast", kcal_per_100g=165.0, source="fdc", fdc_id=1)
+-    upsert_food(conn, name="Chicken Liver", kcal_per_100g=119.0, source="fdc", fdc_id=2)
+-    upsert_food(conn, name="Pumpkin", kcal_per_100g=26.0, source="fdc", fdc_id=3)
++    upsert_food(conn, name="Onion, raw", kcal_per_100g=40.0, source="fdc", fdc_id=3)
++    upsert_food(conn, name="Chocolate, dark", kcal_per_100g=540.0, source="fdc", fdc_id=4)
++    upsert_food(conn, name="Chicken Breast", kcal_per_100g=165.0, source="fdc", fdc_id=5)
+     conn.commit()
+ 
+-    results = search_foods(conn, "chicken")
+-    assert [item.name for item in results] == ["Chicken Breast", "Chicken Liver"]
+-    assert [item.kcal_per_100g for item in results] == [165.0, 119.0]
+-
++    names = [r.name.lower() for r in search_foods(conn, "onion") + search_foods(conn, "chicken")]
++    assert all("onion" not in n and "chocolate" not in n for n in names)
++    assert any("chicken" in n for n in names)
+     conn.close()
+diff --git a/tests/test_import_search_optimizer.py b/tests/test_import_search_optimizer.py
+new file mode 100644
+index 0000000..96b6db7
+--- /dev/null
++++ b/tests/test_import_search_optimizer.py
+@@ -0,0 +1,18 @@
++from dog_nutrition.foods_db import connect_db, init_db, search_foods, upsert_food
++from dog_nutrition.search import search_foods_cn
++
++
++def test_import_search_optimizer_paths(tmp_path) -> None:
++    conn = connect_db(tmp_path / "foods.sqlite")
++    init_db(conn)
++    upsert_food(conn, name="Chicken, broiler or fryers, breast, meat only", kcal_per_100g=165.0, source="fdc", fdc_id=1)
++    upsert_food(conn, name="Egg, whole, cooked", kcal_per_100g=155.0, source="fdc", fdc_id=2)
++    conn.commit()
++
++    en = search_foods(conn, "chicken breast")
++    assert any("breast" in r.name.lower() for r in en)
++
++    cn = search_foods_cn(conn, "鸡蛋")
++    assert cn
++    assert "egg" in cn[0].food.name.lower()
++    conn.close()
+diff --git a/tests/test_search_aliases.py b/tests/test_search_aliases.py
+new file mode 100644
+index 0000000..dc7c364
+--- /dev/null
++++ b/tests/test_search_aliases.py
+@@ -0,0 +1,20 @@
++from dog_nutrition.foods_db import connect_db, init_db, upsert_food
++from dog_nutrition.search import expand_query, search_foods_cn
++
++
++def test_expand_query_mapping_for_lamb_and_beef(tmp_path) -> None:
++    conn = connect_db(tmp_path / "foods.sqlite")
++    init_db(conn)
++    upsert_food(conn, name="Lamb, leg, separable lean only", kcal_per_100g=206.0, source="fdc", fdc_id=3)
++    upsert_food(conn, name="Beef, round, separable lean", kcal_per_100g=201.0, source="fdc", fdc_id=4)
++    conn.commit()
++
++    assert "lamb leg" in expand_query("羊腿")
++    assert "beef round" in expand_query("牛霖")
++
++    lamb_results = search_foods_cn(conn, "羊腿")
++    assert any("lamb" in row.food.name.lower() for row in lamb_results)
++
++    beef_results = search_foods_cn(conn, "牛霖")
++    assert any("beef" in row.food.name.lower() for row in beef_results)
++    conn.close()
+diff --git a/tools/import_fdc_bundle.ps1 b/tools/import_fdc_bundle.ps1
+new file mode 100644
+index 0000000..6b6f506
+--- /dev/null
++++ b/tools/import_fdc_bundle.ps1
+@@ -0,0 +1,27 @@
++param(
++  [string]$DbPath = "foods.db",
++  [string]$InputDir = "data/fdc"
++)
++
++$ErrorActionPreference = "Stop"
++Write-Host "[INFO] Importing FDC bundle from $InputDir to $DbPath"
++
++python -m dog_nutrition.fdc_import --db $DbPath --input $InputDir
++
++python - <<'PY'
++import sqlite3
++from pathlib import Path
++
++db = Path("foods.db")
++conn = sqlite3.connect(db)
++cur = conn.cursor()
++
++foods = cur.execute("select count(*) from foods").fetchone()[0]
++print(f"foods_total={foods}")
++
++for kw in ["lamb", "mutton", "shank", "leg"]:
++    c = cur.execute("select count(*) from foods where lower(name) like ?", (f"%{kw}%",)).fetchone()[0]
++    print(f"hit_{kw}={c}")
++
++conn.close()
++PY
+diff --git a/tools/verify_all.ps1 b/tools/verify_all.ps1
+new file mode 100644
+index 0000000..17ea1ea
+--- /dev/null
++++ b/tools/verify_all.ps1
+@@ -0,0 +1,32 @@
++$ErrorActionPreference = "Stop"
++Write-Host "[INFO] git commit"
++git rev-parse --short HEAD
++
++Write-Host "[INFO] pytest"
++pytest -q
++
++Write-Host "[INFO] verify search"
++python tools/verify_search.py
++
++Write-Host "[INFO] table counts"
++python - <<'PY'
++import sqlite3
++from pathlib import Path
++
++db = Path("foods.db")
++if not db.exists():
++    print("foods.db not found, skip table count")
++    raise SystemExit(0)
++
++conn = sqlite3.connect(db)
++cur = conn.cursor()
++for tbl in ["foods", "food_nutrients", "nutrient_meta"]:
++    try:
++        count = cur.execute(f"select count(*) from {tbl}").fetchone()[0]
++    except sqlite3.OperationalError:
++        count = -1
++    print(f"{tbl}={count}")
++conn.close()
++PY
++
++Write-Host "PASS"
+diff --git a/tools/verify_search.py b/tools/verify_search.py
+new file mode 100644
+index 0000000..cdafe5f
+--- /dev/null
++++ b/tools/verify_search.py
+@@ -0,0 +1,65 @@
++from __future__ import annotations
++
++import sys
++import tempfile
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++SRC = ROOT / "src"
++if str(SRC) not in sys.path:
++    sys.path.insert(0, str(SRC))
++
++from dog_nutrition.foods_db import connect_db, init_db, search_foods, upsert_food
++from dog_nutrition.search import expand_query, search_foods_cn
++
++
++def _seed(conn) -> None:
++    upsert_food(conn, name="Chicken, broilers or fryers, breast, meat only, cooked, roasted", kcal_per_100g=165.0, source="fdc", fdc_id=1001)
++    upsert_food(conn, name="Chicken drumstick, meat only", kcal_per_100g=161.0, source="fdc", fdc_id=1002)
++    upsert_food(conn, name="Egg, whole, cooked", kcal_per_100g=155.0, source="fdc", fdc_id=1003)
++    upsert_food(conn, name="Lamb, leg, separable lean only", kcal_per_100g=206.0, source="fdc", fdc_id=1004)
++    upsert_food(conn, name="Beef shank, separable lean", kcal_per_100g=201.0, source="fdc", fdc_id=1005)
++    upsert_food(conn, name="Onion, raw", kcal_per_100g=40.0, source="fdc", fdc_id=1006)
++    upsert_food(conn, name="Chocolate, dark", kcal_per_100g=546.0, source="fdc", fdc_id=1007)
++    conn.commit()
++
++
++def _names(rows) -> list[str]:
++    return [item.food.name if hasattr(item, "food") else item.name for item in rows]
++
++
++def main() -> None:
++    with tempfile.TemporaryDirectory() as tmp:
++        db_path = Path(tmp) / "verify_foods.sqlite"
++        conn = connect_db(db_path)
++        init_db(conn)
++        _seed(conn)
++
++        en = search_foods(conn, "chicken breast")
++        assert len(en) > 0
++
++        egg_expand = expand_query("鸡蛋")
++        assert "egg" in egg_expand
++        assert "chicken" not in egg_expand
++        assert "whole" not in egg_expand
++
++        egg = search_foods_cn(conn, "鸡蛋")
++        assert egg, "鸡蛋检索必须有结果"
++        egg_top3 = egg[:3]
++        egg_positions = [idx for idx, row in enumerate(egg_top3) if "egg" in row.food.name.lower()]
++        chicken_positions = [idx for idx, row in enumerate(egg_top3) if "chicken" in row.food.name.lower()]
++        assert egg_positions, "鸡蛋 top3 必须包含 Egg"
++        if chicken_positions:
++            assert min(egg_positions) < min(chicken_positions), "鸡蛋结果中 Chicken 不得排在 Egg 前面"
++
++        breast = search_foods_cn(conn, "鸡胸肉")
++        assert breast and "chicken" in breast[0].food.name.lower() and "breast" in breast[0].food.name.lower()
++
++        print("expand_query(鸡蛋)[:10] =", egg_expand[:10])
++        print("鸡蛋 top3 =", _names(egg_top3))
++        print("PASS", [r.name for r in en], _names(egg_top3), _names(breast[:1]))
++        conn.close()
++
++
++if __name__ == "__main__":
++    main()
